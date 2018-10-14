@@ -75,3 +75,5 @@ server/server
 client/client
 tests/
 *.sh
+
+.idea/*
