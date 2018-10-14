@@ -14,7 +14,7 @@ The nodes communcating with eachother are called *gossipers* and client communic
 
 There were three important parts for this first deadline.
 
-1. Simple messages
+### Simple messages
 
 This very first part focused on being able to send and receive very simple message and simply broadcast them to your whole list of peers. Receiving a message from an unknown peer makes your gossiper add it to its list.
 
@@ -34,7 +34,7 @@ Client :
 
 The *-simple* flag forces the gossiper to use simple messages.
 
-2. Rumor mongering and anti-entropy
+### Rumor mongering and anti-entropy
 
 For this part, we introduced the concepts of rumor-mongering and anti-entropy to the code. Simply put, for rumor-mongering gossipers will send messages at random, and continue to do so randomly. Anti-Entropy sends a random message every *T* amount of time. Having both of these protocols ensures messages are indeed received, and that the expected time for a node to receive a message is not too high.
 
@@ -54,7 +54,7 @@ Client :
 
 Notice the absence of the *-simple* flag.
 
-3. A simple GUI
+### A simple GUI
 
 For this last part we had to implement a simple GUI tool on a static web page using html/javascript.
 
@@ -65,6 +65,7 @@ The GUI should be communicating with a server listening on the port *8080*.
 To use the gui simply go the server directory and type 
 
 `go build`
+
 `./server`
 
 Then go to your favorite web browser, [connect to the server](localhost:8080) (at *127.0.0.1:8080*). You will be prompted an address for your gossiper (as for the *gossipAddr* flag in previous parts), but not the port that will be handled internally. 
