@@ -2,7 +2,7 @@ package main
 
 import (
 	"flag"
-	"github.com/RemiCoudert/Peerster/gossip"
+	"github.com/Korf74/Peerster/gossip"
 )
 
 /**

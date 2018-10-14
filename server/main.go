@@ -3,9 +3,9 @@ package main
 import (
 	"bytes"
 	"encoding/json"
-	"github.com/RemiCoudert/Peerster/gossip"
-	"github.com/RemiCoudert/Peerster/primitives"
-	"github.com/RemiCoudert/Peerster/utils"
+	"github.com/Korf74/Peerster/gossip"
+	"github.com/Korf74/Peerster/primitives"
+	"github.com/Korf74/Peerster/utils"
 	"github.com/dedis/protobuf"
 	"github.com/gorilla/mux"
 	"io/ioutil"

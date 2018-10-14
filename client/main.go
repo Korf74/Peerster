@@ -2,8 +2,8 @@ package main
 
 import (
 	"flag"
-	"github.com/RemiCoudert/Peerster/primitives"
-	"github.com/RemiCoudert/Peerster/utils"
+	"github.com/Korf74/Peerster/primitives"
+	"github.com/Korf74/Peerster/utils"
 	"github.com/dedis/protobuf"
 	"net"
 )
