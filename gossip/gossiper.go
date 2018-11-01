@@ -18,6 +18,7 @@ const MAX_PEERS = 2048
 const MAX_PACKET_SIZE = 2048
 const MAX_MSG = 2048
 const MAX_CHANNEL_BUFFER = 2048
+const HOP_LIMIT = 10
 
 /* TODO IDEA : a function that receives channels and statuses and pair them, if new status
 ** TODO wihout chennel -> create
@@ -35,6 +36,8 @@ type Gossiper struct {
 	waitingChannels map[string]chan *primitives.StatusPacket
 	waitingThreads map[string]bool
 	receivedMsgs map[string][]primitives.RumorMessage
+	receivedPrivateMsgs map[string][]primitives.PrivateMessage
+	routingTable map[string]*net.UDPAddr
 	nextID uint32
 	newMsgChannel chan *primitives.ServerPacket
 	muxPeers sync.Mutex // TODO REALLY NEED IT ? THREAD BY PEER
@@ -45,20 +48,22 @@ type Gossiper struct {
 
 }
 
-func NewGossiper(clientPort, address, gossiperName, peers string, simple bool) (g *Gossiper, channel chan *primitives.ServerPacket) {
-	var udpAddrGossip, err1 = net.ResolveUDPAddr("udp4", address) // TODO test errors
+func NewGossiper(clientPort, address, gossiperName, peers string, rtimer int, simple bool) (g *Gossiper, channel chan *primitives.ServerPacket) {
+
+	var udpAddrGossip, err1 = net.ResolveUDPAddr("udp4", address)
 	utils.CheckError(err1)
 
 	var udpConnGossip, err2 = net.ListenUDP("udp4", udpAddrGossip)
 	utils.CheckError(err2)
 
-	var udpAddrClient, err3 = net.ResolveUDPAddr("udp4", "127.0.0.1:"+clientPort) // TODO test errors
+	var udpAddrClient, err3 = net.ResolveUDPAddr("udp4", "127.0.0.1:"+clientPort)
 	utils.CheckError(err3)
 
 	var udpConnClient, err4 = net.ListenUDP("udp4", udpAddrClient)
 	utils.CheckError(err4)
 
 	var peersList []net.UDPAddr
+
 	if len(peers) != 0 {
 		peersList = make_peers(strings.Split(peers, ","))
 	}
@@ -77,6 +82,8 @@ func NewGossiper(clientPort, address, gossiperName, peers string, simple bool) (
 		waitingChannels: make(map[string]chan *primitives.StatusPacket),
 		waitingThreads: make(map[string]bool),
 		receivedMsgs: make(map[string][]primitives.RumorMessage),
+		receivedPrivateMsgs: make(map[string][]primitives.PrivateMessage),
+		routingTable: make(map[string]*net.UDPAddr),
 		nextID: 1,
 		newMsgChannel: channel,
 		muxPeers: sync.Mutex{},
@@ -91,6 +98,7 @@ func NewGossiper(clientPort, address, gossiperName, peers string, simple bool) (
 	go g.listenPeers(simple)
 	go g.antiEntropy()
 	go g.listenClient(simple)
+	if rtimer > 0 { go g.sendRouteRumorMessages(rtimer) }
 
 	return
 }
@@ -547,6 +555,35 @@ func (g * Gossiper) antiEntropy() {
 
 }
 
+func (g *Gossiper) populateDSDV(rumor *primitives.RumorMessage, from *net.UDPAddr) {
+
+	g.routingTable[rumor.Origin] = from// TODO concurrency
+
+	fmt.Println("DSDV "+rumor.Origin+" "+from.String())
+
+}
+
+func (g *Gossiper) sendRouteRumorMessages(rtimer int) {
+
+	var pckt = &primitives.ClientMessage{}
+	pckt.Private = false
+
+	g.receiveFromClient(pckt)
+
+	var ticker = time.NewTicker(time.Second * time.Duration(rtimer))
+
+	defer ticker.Stop()
+
+	for {
+
+		<- ticker.C
+
+		g.receiveFromClient(pckt)
+
+	}
+
+}
+
 func (g *Gossiper) listenClient(simple bool) {
 
 	defer g.clientConn.Close()
@@ -619,7 +656,7 @@ func (g *Gossiper) receiveFromClient(clientPacket *primitives.ClientMessage) {
 			g.conn.WriteToUDP(packetBytes, &p)
 		}
 
-	} else { // Rumor
+	} else if !clientPacket.Private { // Rumor
 
 		var rumor = &primitives.RumorMessage{}
 
@@ -638,6 +675,27 @@ func (g *Gossiper) receiveFromClient(clientPacket *primitives.ClientMessage) {
 		g.appendMsg(g.name, rumor)
 
 		g.doRumorStep(rumor, g.getRandomPeer())
+
+	} else { // PrivateMessage
+
+		privateMessage := &primitives.PrivateMessage{}
+
+		to := clientPacket.To
+
+		_, exists := g.routingTable[to]
+
+		if !exists {
+			return
+		}
+
+		privateMessage.Origin = g.name
+		privateMessage.ID = 0
+		privateMessage.Text = clientPacket.Text
+		privateMessage.Destination = to
+		privateMessage.HopLimit = HOP_LIMIT
+
+
+		g.sendPrivateMessage(privateMessage, to)
 
 	}
 
@@ -672,7 +730,13 @@ func (g *Gossiper) receiveFromPeer(packet *primitives.GossipPacket, from *net.UD
 
 		if rumor.ID == g.getStatusID(rumor.Origin) {
 
-			g.newMsgChannel <- g.makeServerPacket(packet)
+			g.populateDSDV(rumor, from)
+
+			if rumor.Text != "" {
+				g.newMsgChannel <- g.makeServerPacket(packet)
+			} else {
+				g.newMsgChannel <- g.makeServerPacket(nil)
+			}
 
 			g.writeMessagePeer(packet, from)
 
@@ -691,6 +755,34 @@ func (g *Gossiper) receiveFromPeer(packet *primitives.GossipPacket, from *net.UD
 			//fmt.Println("ALREADY SEEN")
 			g.sendStatus(from)
 			//fmt.Println("SENT ACK STATUS TO "+from.String())
+
+		}
+
+	} else if packet.Private != nil { // Private
+
+		msg := packet.Private
+
+		g.writeMessagePeer(packet, from)
+
+		if msg.Destination == g.name {
+
+			origin := msg.Origin
+
+			if g.receivedPrivateMsgs[origin] == nil {
+
+				g.receivedPrivateMsgs[origin] = make([]primitives.PrivateMessage, 0, MAX_MSG)
+
+			}
+
+			g.receivedPrivateMsgs[origin] = append(g.receivedPrivateMsgs[origin], *msg)
+
+			g.newMsgChannel <- g.makeServerPacket(packet)
+
+		} else {
+
+			msg.HopLimit -= 1
+
+			g.sendPrivateMessage(msg, msg.Destination)
 
 		}
 
@@ -731,9 +823,17 @@ func (g *Gossiper) makeServerPacket(gossipPacket *primitives.GossipPacket) (pack
 		if gossipPacket.Simple != nil {
 			packet.Origin = gossipPacket.Simple.OriginalName
 			packet.Content = gossipPacket.Simple.Contents
-		} else {
+			packet.Private = false
+		} else if gossipPacket.Rumor != nil {
 			packet.Origin = gossipPacket.Rumor.Origin
 			packet.Content = gossipPacket.Rumor.Text
+			packet.Private = false
+		} else if gossipPacket.Private != nil {
+
+			packet.Origin = gossipPacket.Private.Origin
+			packet.Content = gossipPacket.Private.Text
+			packet.Private = true
+
 		}
 	}
 
@@ -744,6 +844,16 @@ func (g *Gossiper) makeServerPacket(gossipPacket *primitives.GossipPacket) (pack
 	}
 
 	packet.Peers = &peersString
+
+	var contacts []string
+
+	fmt.Println("CONTACTS : "+strconv.Itoa(len(g.routingTable)))
+
+	for contact := range g.routingTable {
+		contacts = append(contacts, contact)
+	}
+
+	packet.Contacts = &contacts
 
 	return
 
@@ -764,7 +874,7 @@ func (g *Gossiper) sendRumorPacket(from string, to *net.UDPAddr, id uint32) {
 
 	var rumor = g.getMsg(from, id)
 
-	var packet = primitives.GossipPacket{
+	var packet = primitives.GossipPacket {
 		Rumor: rumor,
 	}
 
@@ -776,7 +886,7 @@ func (g *Gossiper) sendRumorPacket(from string, to *net.UDPAddr, id uint32) {
 		//fmt.Println("for loop")
 	}
 
-	//fmt.Println("THREAD CREATED FROM SENDRUMORPACKET")
+	fmt.Println("THREAD CREATED FROM SENDRUMORPACKET")
 
 	go g.waitStatusAck(to, rumor)
 
@@ -785,6 +895,19 @@ func (g *Gossiper) sendRumorPacket(from string, to *net.UDPAddr, id uint32) {
 	g.notifyMongering(rumor, to)
 
 	//fmt.Println("SENT RUMOR PACKET ("+rumor.Text+") TO "+to.String())
+
+}
+
+func (g *Gossiper) sendPrivateMessage(msg *primitives.PrivateMessage, to string) {
+
+	packet := primitives.GossipPacket{
+		Private: msg,
+	}
+
+	packetByte, err := protobuf.Encode(&packet)
+	utils.CheckError(err)
+
+	g.conn.WriteToUDP(packetByte, g.routingTable[to])
 
 }
 
@@ -804,7 +927,7 @@ func (g *Gossiper) waitStatusAck(from *net.UDPAddr, rumor *primitives.RumorMessa
 	select {
 	case statusRcvd := <- channel:
 
-		//fmt.Println("NO LONGER WAITING FOR STATUS FROM "+from.String())
+		fmt.Println("NO LONGER WAITING FOR STATUS FROM "+from.String())
 
 		ticker.Stop()
 
@@ -885,14 +1008,16 @@ func (g *Gossiper) waitStatusAck(from *net.UDPAddr, rumor *primitives.RumorMessa
 		}
 
 	case <- ticker.C:
-		//fmt.Println("Status Timeout for "+g.addr.String()+" from "+from.String())
+		fmt.Println("Status Timeout for "+g.addr.String()+" from "+from.String())
 		//fmt.Println("TIMEOUT FROM "+from.String())
 		ticker.Stop()
 		g.setWaitingThread(from.String(),false)
 		if rd == 0 && rumor != nil {
 			var newPeer = g.getRandomPeerExcept(from)
 
-			g.notifyCoinFlip(newPeer)
+			if newPeer != nil {
+				g.notifyCoinFlip(newPeer)
+			}
 			g.doRumorStep(rumor, newPeer)
 		} else {
 			//fmt.Println("FLIP FAILED")
@@ -928,8 +1053,8 @@ func (g *Gossiper) makeStatus() (*[]primitives.PeerStatus) {
 
 func (g *Gossiper) sendStatus(to *net.UDPAddr) {
 
-	var packet = primitives.GossipPacket{
-		Status: &primitives.StatusPacket{
+	var packet = primitives.GossipPacket {
+		Status: &primitives.StatusPacket {
 			Want: *g.makeStatus(),
 		},
 	}
@@ -945,9 +1070,13 @@ func (g *Gossiper) sendStatus(to *net.UDPAddr) {
 
 func (g * Gossiper) writeMessageClient(msg string) {
 
-	fmt.Println("CLIENT MESSAGE " + msg)
+	if msg != "" {
 
-	g.printPeers()
+		fmt.Println("CLIENT MESSAGE " + msg)
+
+		g.printPeers()
+
+	}
 
 }
 
@@ -965,9 +1094,20 @@ func (g * Gossiper) writeMessagePeer(packet *primitives.GossipPacket, from *net.
 
 		var rumor = packet.Rumor
 
+		if rumor.Text == "" {
+			return
+		}
+
 		fmt.Println("RUMOR origin "+rumor.Origin+" from "+from.String()+" ID "+
 			strconv.FormatUint(uint64(rumor.ID), 10)+
 			" contents "+rumor.Text)
+
+	} else if packet.Private != nil {
+
+		msg := packet.Private
+
+		fmt.Println("PRIVATE origin "+msg.Origin+" hop-limit "+strconv.FormatUint(uint64(msg.HopLimit), 10)+
+			" contents "+msg.Text)
 
 	}
 
@@ -984,6 +1124,8 @@ func (g *Gossiper) notifyMongering(rumor *primitives.RumorMessage, to *net.UDPAd
 func (g *Gossiper) notifyStatus(statusPacket *primitives.StatusPacket, from *net.UDPAddr) {
 
 	fmt.Print("STATUS from "+from.String()+" ")
+
+	fmt.Println(statusPacket == nil)
 
 	for _, status := range statusPacket.Want {
 
@@ -1002,6 +1144,8 @@ func (g *Gossiper) notifyStatus(statusPacket *primitives.StatusPacket, from *net
 			strconv.FormatUint(uint64(s.NextID), 10)+" ")
 
 	}
+
+	fmt.Println()
 
 }
 

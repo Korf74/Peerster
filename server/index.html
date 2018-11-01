@@ -416,71 +416,71 @@
         color: #f5f5f5;
     }
 
-    #frame #sidepanel #contacts {
+    #frame #sidepanel .contacts {
         height: calc(100% - 177px);
         overflow-y: scroll;
         overflow-x: hidden;
     }
 
     @media screen and (max-width: 735px) {
-        #frame #sidepanel #contacts {
+        #frame #sidepanel .contacts {
             height: calc(100% - 149px);
             overflow-y: scroll;
             overflow-x: hidden;
         }
 
-        #frame #sidepanel #contacts::-webkit-scrollbar {
+        #frame #sidepanel .contacts::-webkit-scrollbar {
             display: none;
         }
     }
 
-    #frame #sidepanel #contacts.expanded {
+    #frame #sidepanel .contacts.expanded {
         height: calc(100% - 334px);
     }
 
-    #frame #sidepanel #contacts::-webkit-scrollbar {
+    #frame #sidepanel .contacts::-webkit-scrollbar {
         width: 8px;
         background: #2c3e50;
     }
 
-    #frame #sidepanel #contacts::-webkit-scrollbar-thumb {
+    #frame #sidepanel .contacts::-webkit-scrollbar-thumb {
         background-color: #243140;
     }
 
-    #frame #sidepanel #contacts ul li.contact {
+    #frame #sidepanel .contacts ul li.contact {
         position: relative;
         padding: 10px 0 15px 0;
         font-size: 0.9em;
     }
 
     @media screen and (max-width: 735px) {
-        #frame #sidepanel #contacts ul li.contact {
+        #frame #sidepanel .contacts ul li.contact {
             padding: 6px 0 46px 8px;
         }
     }
 
-    #frame #sidepanel #contacts ul li.contact.active {
+    #frame #sidepanel .contacts ul li.contact.active {
         background: #32465a;
         border-right: 5px solid #435f7a;
     }
 
-    #frame #sidepanel #contacts ul li.contact.active span.contact-status {
+    #frame #sidepanel .contacts ul li.contact.active span.contact-status {
         border: 2px solid #32465a !important;
     }
 
-    #frame #sidepanel #contacts ul li.contact .wrap {
+    #frame #sidepanel .contacts ul li.contact .wrap {
         width: 88%;
         margin: 0 auto;
         position: relative;
     }
 
     @media screen and (max-width: 735px) {
-        #frame #sidepanel #contacts ul li.contact .wrap {
+        #frame #sidepanel .contacts ul li.contact .wrap {
             width: 100%;
         }
     }
 
-    #frame #sidepanel #contacts ul li.contact .wrap span {
+    #frame #sidepanel .contacts ul li.contact .wrap span {
         position: absolute;
         left: 0;
         margin: -2px 0 0 -2px;
@@ -491,28 +491,28 @@
         background: #95a5a6;
     }
 
-    #frame #sidepanel #contacts ul li.contact .wrap img {
+    #frame #sidepanel .contacts ul li.contact .wrap img {
         width: 40px;
         border-radius: 50%;
         float: left;
         margin-right: 10px;
     }
 
-    #frame #sidepanel #contacts ul li.contact .wrap .meta {
+    #frame #sidepanel .contacts ul li.contact .wrap .meta {
         padding: 5px 0 0 0;
     }
 
     @media screen and (max-width: 735px) {
-        #frame #sidepanel #contacts ul li.contact .wrap .meta {
+        #frame #sidepanel .contacts ul li.contact .wrap .meta {
             display: none;
         }
     }
 
-    #frame #sidepanel #contacts ul li.contact .wrap .meta .name {
+    #frame #sidepanel .contacts ul li.contact .wrap .meta .name {
         font-weight: 600;
     }
 
-    #frame #sidepanel #contacts ul li.contact .wrap .meta .preview span {
+    #frame #sidepanel .contacts ul li.contact .wrap .meta .preview span {
         position: initial;
         border-radius: initial;
         background: none;
@@ -847,9 +847,16 @@ Website: http://emilcarlsson.se/
                 Add Peer
             </button>
         </div>
-        <div id="contacts">
-            <ul>
+        <div class="contacts">
+            <p>PEERS : </p>
+            <ul class="peer">
+                <li class="contact"><div class="wrap"><div class="meta"><p class="name">TestP</p></div></div></li>
             </ul>
+            <p>CONTACTS : </p>
+            <form class="origin">
+                <!--<li class="contact"><div class="wrap"><div class="meta"><p class="name"><button class="contactButton" id="all">Rumors</button></p></div></div></li> -->
+                <input type="radio" name="messageType" value="rumor" checked>Rumor messages<br>
+            </form>
         </div>
     </div>
     <div class="content">
@@ -881,7 +888,10 @@ function newMessage() {
     if ($.trim(message) == '') {
         return false;
     }
-    $('<li class="sent"><p>' + message + '</p></li>').appendTo($('.messages ul'));
+
+    checkedValue = $('input[name=messageType]:checked').val();
+
+    $('<li id="'+checkedValue+'" class="sent"><p>' + message + '</p></li>').appendTo($('.messages ul'));
     $('.message-input input').val(null);
     $('.contact.active .preview').html('<span>You: </span>' + message);
     $(".messages").animate({scrollTop: $(document).height()}, "fast");
@@ -889,6 +899,7 @@ function newMessage() {
     $.post("/",
             JSON.stringify({
                 message: message,
+                to: checkedValue,
                 id: gossipID
             }),
             function (data, status) {
@@ -917,11 +928,23 @@ function newMessage() {
                 gossipID = data.ID;
                 $('.peerName').text(data.Addr);
                 gossiperCreated = true;
+
+                $("input[name='messageType']").change(changeMessageView);
+
                 update();
             }
     );
 
 })();
+
+function changeMessageView() {
+
+    value = $(this).val();
+
+    $('.messages li').hide();
+    $('.messages #'+value+'').show();
+
+}
 
 function update() {
 
@@ -936,16 +959,32 @@ function update() {
             }),
             function(data) {
                 if(data.Messages != null) {
+                    //alert("Messages : "+data.Messages);
                     for (let i = 0; i < data.Messages.length; ++i) {
-                        if(data.Messages[i].Origin.length == 0 && data.Messages[i].Messages.length == 0) break;
-                        $('<li class=replies><p align="right"><em>' + data.Messages[i].Origin + ' :</em><br>' + data.Messages[i].Content + '</p></li>')
+                        $('<li id="rumor" class=replies><p align="right"><em>' + data.Messages[i].Origin + ' :</em><br>' + data.Messages[i].Content + '</p></li>')
+                                .appendTo($('.messages ul'));
+                    }
+                }
+
+                if(data.PrivateMessages != null) {
+                    //alert("Messages : "+data.Messages);
+                    for (let i = 0; i < data.PrivateMessages.length; ++i) {
+                        $('<li id="'+data.PrivateMessages[i].Origin+'" class=replies><p align="right"><em>' + data.PrivateMessages[i].Origin + ' :</em><br>' + data.PrivateMessages[i].Content + '</p></li>')
                                 .appendTo($('.messages ul'));
                     }
                 }
 
                 if(data.Peers != null) {
+                    //alert("Peers : "+data.Peers);
                     for (let i = 0; i < data.Peers.length; ++i) {
                         addPeer(data.Peers[i]);
+                    }
+                }
+
+                if(data.Contacts != null) {
+                    //alert("Contacts : "+data.Contacts);
+                    for (let i = 0; i < data.Contacts.length; ++i) {
+                        addContact(data.Contacts[i]);
                     }
                 }
             },
@@ -956,6 +995,10 @@ function update() {
 
 $('.submit').click(function () {
     newMessage();
+});
+
+$('.contactButton').click(function () {
+    // change current view with this.id
 });
 
 $(window).on('keydown', function (e) {
@@ -991,10 +1034,18 @@ $('#addcontact').click(function () {
             "json"
     );
 
+    //addPeer(peerAddr+':'+peerPort);
+
 });
 
 function addPeer(peer) {
-    $('<li class="contact"><div class="wrap"><div class="meta"><p class="name">' + peer + '</p></div></div></li>').appendTo($('#contacts ul'));
+    $('<li class="contact"><div class="wrap"><div class="meta"><p class="name">' + peer + '</p></div></div></li>').appendTo($('.contacts .peer'));
+};
+
+function addContact(contact) {
+    //$('<li class="contact"><div class="wrap"><div class="meta"><p class="name"><button class="contactButton" id="'+ contact +'">' + contact + '</button></p></div></div></li>').appendTo($('.contacts .origin'));
+    $('<input type="radio" name="messageType" value="'+contact+'">'+contact+'<br>').appendTo($('.contacts .origin'));
+    $('input[value='+contact+']').change(changeMessageView);
 };
 
 //# sourceURL=pen.js

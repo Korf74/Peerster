@@ -27,6 +27,7 @@ func main() {
 	var pckt = primitives.ClientMessage{}
 
 	pckt.Text = *msg
+	pckt.Private = false
 
 	var packetBytes, err4 = protobuf.Encode(&pckt)
 	utils.CheckError(err4)

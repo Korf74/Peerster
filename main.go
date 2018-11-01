@@ -3,6 +3,8 @@ package main
 import (
 	"flag"
 	"github.com/Korf74/Peerster/gossip"
+	"github.com/Korf74/Peerster/utils"
+	"strconv"
 )
 
 /**
@@ -35,6 +37,10 @@ package​ from go's standard library to implement your CLIs.
  	var peers = flag.String("peers", "",
  		"comma separated list of peers of the form ip:port")
 
+ 	var rtimer = flag.String("rtimer", "0",
+ 		"route rumors sending period in seconds, 0 to disable sending of " +
+ 		"route rumors")
+
  	var simple = flag.Bool("simple", false,
  		"run gossiper in simple broadcast mode")
 
@@ -46,7 +52,10 @@ package​ from go's standard library to implement your CLIs.
  	fmt.Println("peers : ", *peers)
  	fmt.Println("simple : ", *simple)*/
 
- 	gossip.NewGossiper(*UIPort, *gossipAddr, *name, *peers,  *simple)
+	 var timer, err = strconv.Atoi(*rtimer)
+	 utils.CheckError(err)
+
+ 	gossip.NewGossiper(*UIPort, *gossipAddr, *name, *peers,  timer, *simple)
 
  	for {
 

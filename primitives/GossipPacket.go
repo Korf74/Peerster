@@ -4,4 +4,5 @@ type GossipPacket struct {
 	Simple *SimpleMessage
 	Rumor *RumorMessage
 	Status *StatusPacket
+	Private *PrivateMessage
 }
