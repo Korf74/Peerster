@@ -79,3 +79,4 @@ tests/
 .idea/*
 
 client/_SharedFiles/
+server/uploads/
