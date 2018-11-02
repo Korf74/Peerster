@@ -9,10 +9,12 @@ import (
 	"github.com/Korf74/Peerster/utils"
 	"github.com/dedis/protobuf"
 	"github.com/gorilla/mux"
+	"io"
 	"io/ioutil"
 	"log"
 	"net"
 	"net/http"
+	"os"
 	"strconv"
 )
 var gossipers []*gossipInfo
@@ -149,6 +151,38 @@ func newPeer(w http.ResponseWriter, r *http.Request) {
 	utils.CheckError(err)
 
 	gossipers[msg.GossipID].G.NotifyNewPeer(peerAddr)
+
+}
+
+func newFile(w http.ResponseWriter, r *http.Request) {
+
+	/*var body, err = ioutil.ReadAll(r.Body)
+	utils.CheckError(err)
+
+	body = bytes.TrimPrefix(body, []byte("\xef\xbb\xbf"))
+
+	var msg = idMessage{}
+	err = json.Unmarshal(body, &msg)
+	utils.CheckError(err)
+
+	fmt.Println(msg.GossipID)*/
+
+	fmt.Println(r.FormValue("id"))
+
+	file, handler, err := r.FormFile("file")
+	utils.CheckError(err)
+	defer file.Close()
+
+	// copy example
+	f, err := os.OpenFile("../client/_SharedFiles/"+handler.Filename, os.O_WRONLY|os.O_CREATE, 0666)
+	utils.CheckError(err)
+	defer f.Close()
+	io.Copy(f, file)
+
+	id, err := strconv.Atoi(r.FormValue("id"))
+	utils.CheckError(err)
+
+	gossipers[id].G.NotifyFile(f.Name())
 
 }
 
@@ -290,6 +324,7 @@ func main() {
 	r.Methods("POST").Subrouter().HandleFunc("/newPeer", newPeer)//HandleFunc("/", newMsg)
 	r.Methods("POST").Subrouter().HandleFunc("/getMessages", update)//HandleFunc("/", newMsg)
 	r.Methods("POST").Subrouter().HandleFunc("/createGossiper", createGossiper)//HandleFunc("/", newMsg)
+	r.Methods("POST").Subrouter().HandleFunc("/newFile", newFile)//HandleFunc("/", newMsg)
 	r.Handle("/", http.FileServer(http.Dir(".")))
 
 	log.Println(http.ListenAndServe(":8080", r))

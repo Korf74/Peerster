@@ -5,8 +5,10 @@ import (
 	"github.com/Korf74/Peerster/primitives"
 	"github.com/Korf74/Peerster/utils"
 	"github.com/dedis/protobuf"
+	"io"
 	"math/rand"
 	"net"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -1112,6 +1114,31 @@ func (g * Gossiper) writeMessagePeer(packet *primitives.GossipPacket, from *net.
 	}
 
 	g.printPeers()
+
+}
+
+func (g *Gossiper) NotifyFile(name string) {
+
+	f, err := os.OpenFile(name, os.O_RDONLY, 0666)
+	utils.CheckError(err)
+	defer f.Close()
+
+	counter := 0
+
+	for err == nil {
+
+		f_out, errFile := os.OpenFile(name+"_"+strconv.Itoa(counter),
+			os.O_WRONLY|os.O_CREATE, 0666)
+		utils.CheckError(errFile)
+
+		_, err = io.CopyN(f_out, f,8000)
+
+		f_out.Close()
+
+		counter += 1
+	}
+
+	// TODO
 
 }
 

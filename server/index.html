@@ -848,6 +848,13 @@ Website: http://emilcarlsson.se/
             </button>
         </div>
         <div class="contacts">
+            <input type="file" id="filePicker">
+            <button id="shareFileButton">Share</button>
+            <form id="fileForm"enctype="multipart/form-data">
+                <input id="fileInput" name="file" type="file" />
+                <input id="shareFileButton2" type="button" value="Upload" />
+            </form>
+            <progress></progress>
             <p>PEERS : </p>
             <ul class="peer">
                 <li class="contact"><div class="wrap"><div class="meta"><p class="name">TestP</p></div></div></li>
@@ -997,8 +1004,47 @@ $('.submit').click(function () {
     newMessage();
 });
 
-$('.contactButton').click(function () {
-    // change current view with this.id
+$('#shareFileButton').click(function() {
+    picker = $('#filePicker');
+    file = picker.val();
+    picker.val("");
+
+    alert(file);
+
+    $.post("/newFile",
+            JSON.stringify({
+                filePath: file,
+                id: gossipID
+            }),
+            function (data, status) {
+            },
+            "json"
+    );
+
+});
+
+$('#shareFileButton2').on('click', function() {
+
+    var fd = new FormData($('#fileForm')[0]);
+    fd.append("id", gossipID);
+
+    $.ajax({
+        // Your server script to process the upload
+        url: '/newFile',
+        type: 'POST',
+
+        // Form data
+        data: fd,
+
+        // Tell jQuery not to process data or worry about content-type
+        // You *must* include these options!
+        cache: false,
+        contentType: false,
+        processData: false,
+    });
+
+    $('#fileInput').val("")
+
 });
 
 $(window).on('keydown', function (e) {

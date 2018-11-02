@@ -77,3 +77,5 @@ tests/
 *.sh
 
 .idea/*
+
+client/_SharedFiles/

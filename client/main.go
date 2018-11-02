@@ -2,6 +2,7 @@ package main
 
 import (
 	"flag"
+	"fmt"
 	"github.com/Korf74/Peerster/primitives"
 	"github.com/Korf74/Peerster/utils"
 	"github.com/dedis/protobuf"
@@ -12,6 +13,12 @@ func main() {
 
 	var UIPort = flag.String("UIPort", "8080",
 		"port for the UI client")
+
+	var dest = flag.String("dest", "",
+		"destination for the private message")
+
+	var file = flag.String("file", "",
+		"file to be indexed by the gossiper")
 
 	var msg = flag.String("msg", "",
 		"message to be sent")
@@ -26,8 +33,17 @@ func main() {
 
 	var pckt = primitives.ClientMessage{}
 
+	var filePath = "./_SharedFiles/"+*file;
+	fmt.Println(filePath)
+
 	pckt.Text = *msg
-	pckt.Private = false
+
+	if *dest != "" {
+		pckt.Private = true
+		pckt.To = *dest
+	} else {
+		pckt.Private = false
+	}
 
 	var packetBytes, err4 = protobuf.Encode(&pckt)
 	utils.CheckError(err4)
