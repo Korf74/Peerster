@@ -174,7 +174,7 @@ func newFile(w http.ResponseWriter, r *http.Request) {
 	defer file.Close()
 
 	// copy example
-	f, err := os.OpenFile("../client/_SharedFiles/"+handler.Filename, os.O_WRONLY|os.O_CREATE, 0666)
+	f, err := os.OpenFile("../_SharedFiles/"+handler.Filename, os.O_WRONLY|os.O_CREATE, 0666)
 	utils.CheckError(err)
 	defer f.Close()
 	io.Copy(f, file)

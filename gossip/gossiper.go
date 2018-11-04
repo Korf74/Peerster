@@ -1,6 +1,7 @@
 package gossip
 
 import (
+	"crypto/sha256"
 	"fmt"
 	"github.com/Korf74/Peerster/primitives"
 	"github.com/Korf74/Peerster/utils"
@@ -21,6 +22,7 @@ const MAX_PACKET_SIZE = 2048
 const MAX_MSG = 2048
 const MAX_CHANNEL_BUFFER = 2048
 const HOP_LIMIT = 10
+const MAX_FILES = 100
 
 /* TODO IDEA : a function that receives channels and statuses and pair them, if new status
 ** TODO wihout chennel -> create
@@ -40,6 +42,7 @@ type Gossiper struct {
 	receivedMsgs map[string][]primitives.RumorMessage
 	receivedPrivateMsgs map[string][]primitives.PrivateMessage
 	routingTable map[string]*net.UDPAddr
+	files []*primitives.File
 	nextID uint32
 	newMsgChannel chan *primitives.ServerPacket
 	muxPeers sync.Mutex // TODO REALLY NEED IT ? THREAD BY PEER
@@ -86,6 +89,7 @@ func NewGossiper(clientPort, address, gossiperName, peers string, rtimer int, si
 		receivedMsgs: make(map[string][]primitives.RumorMessage),
 		receivedPrivateMsgs: make(map[string][]primitives.PrivateMessage),
 		routingTable: make(map[string]*net.UDPAddr),
+		files: make([]*primitives.File, MAX_FILES),
 		nextID: 1,
 		newMsgChannel: channel,
 		muxPeers: sync.Mutex{},
@@ -1119,26 +1123,65 @@ func (g * Gossiper) writeMessagePeer(packet *primitives.GossipPacket, from *net.
 
 func (g *Gossiper) NotifyFile(name string) {
 
-	f, err := os.OpenFile(name, os.O_RDONLY, 0666)
-	utils.CheckError(err)
+	f, errFile := os.OpenFile(name, os.O_RDONLY, 0666)
+	utils.CheckError(errFile)
 	defer f.Close()
+
+	f_meta, err := os.OpenFile(name+"_meta", os.O_RDWR|os.O_CREATE, 0666)
+	utils.CheckError(err)
+	defer f_meta.Close()
 
 	counter := 0
 
-	for err == nil {
 
-		f_out, errFile := os.OpenFile(name+"_"+strconv.Itoa(counter),
+	for errFile != io.EOF {
+
+		var sz = 0
+
+		buf := make([]byte, 8000)
+		sz, errFile = f.Read(buf)
+
+		if sz == 0 && errFile == io.EOF {
+			break
+		}
+
+		f_out, err := os.OpenFile(name+"_"+strconv.Itoa(counter),
 			os.O_WRONLY|os.O_CREATE, 0666)
-		utils.CheckError(errFile)
+		utils.CheckError(err)
 
-		_, err = io.CopyN(f_out, f,8000)
+		_, err = f_out.Write(buf[:sz])
+		utils.CheckError(err)
+
+		h := sha256.Sum256(buf[:sz])
+		_, err = f_meta.Write(h[:])
+		utils.CheckError(err)
 
 		f_out.Close()
 
 		counter += 1
 	}
 
-	// TODO
+	h := sha256.New()
+	_, err = io.Copy(h, f_meta)
+	utils.CheckError(err)
+
+	f_stat, err := f.Stat()
+	utils.CheckError(err)
+
+	newFile := &primitives.File{
+		Name: f_stat.Name(),
+		Size: f_stat.Size(),
+		Meta: f_stat.Name()+"_meta",
+		SHA: h.Sum(nil),
+	}
+
+	g.addFile(newFile)
+
+}
+
+func (g *Gossiper) addFile(file *primitives.File) {
+
+	g.files = append(g.files, file) // TODO
 
 }
 

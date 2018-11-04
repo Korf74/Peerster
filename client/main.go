@@ -33,7 +33,7 @@ func main() {
 
 	var pckt = primitives.ClientMessage{}
 
-	var filePath = "./_SharedFiles/"+*file;
+	var filePath = "../_SharedFiles/"+*file
 	fmt.Println(filePath)
 
 	pckt.Text = *msg
