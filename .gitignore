@@ -78,6 +78,6 @@ tests/
 
 .idea/*
 
-_SharedFiles/
-_Downloads/
+_SharedFiles/*
+_Downloads/*
 server/uploads/
