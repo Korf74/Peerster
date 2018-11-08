@@ -79,4 +79,5 @@ tests/
 .idea/*
 
 _SharedFiles/
+_Downloads/
 server/uploads/

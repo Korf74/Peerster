@@ -1,7 +1,9 @@
 package gossip
 
 import (
+	"bytes"
 	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"github.com/Korf74/Peerster/primitives"
 	"github.com/Korf74/Peerster/utils"
@@ -17,16 +19,25 @@ import (
 )
 
 const SCIPER = "249996"
+const SHARED_FILES_PREFIX = "_SharedFiles/"
+const DOWNLOADED_FILES_PREFIX = "_Downloads/"
 const MAX_PEERS = 2048
-const MAX_PACKET_SIZE = 2048
+const MAX_PACKET_SIZE = CHUNK_SIZE + 1024
 const MAX_MSG = 2048
 const MAX_CHANNEL_BUFFER = 2048
 const HOP_LIMIT = 10
 const MAX_FILES = 100
+const MAX_WAITING_DATA_ELENENTS = 300
+const CHUNK_SIZE = 8000
 
 /* TODO IDEA : a function that receives channels and statuses and pair them, if new status
 ** TODO wihout chennel -> create
  */
+
+type WaitingDataElement struct {
+	Channel chan *primitives.DataReply
+	elem *primitives.FileElement
+}
 
 type Gossiper struct {
 	addr *net.UDPAddr
@@ -42,14 +53,17 @@ type Gossiper struct {
 	receivedMsgs map[string][]primitives.RumorMessage
 	receivedPrivateMsgs map[string][]primitives.PrivateMessage
 	routingTable map[string]*net.UDPAddr
-	files []*primitives.File
+	fileElements map[string]*primitives.FileElement
 	nextID uint32
+	dataRepliesChannel chan *primitives.DataReply
+	waitingDataReplies []WaitingDataElement
 	newMsgChannel chan *primitives.ServerPacket
 	muxPeers sync.Mutex // TODO REALLY NEED IT ? THREAD BY PEER
 	muxStatus sync.Mutex
 	muxChannels sync.Mutex // TODO SAME
 	muxThreads sync.Mutex
 	muxMsgs sync.Mutex
+	muxDataReplies sync.Mutex
 
 }
 
@@ -89,8 +103,10 @@ func NewGossiper(clientPort, address, gossiperName, peers string, rtimer int, si
 		receivedMsgs: make(map[string][]primitives.RumorMessage),
 		receivedPrivateMsgs: make(map[string][]primitives.PrivateMessage),
 		routingTable: make(map[string]*net.UDPAddr),
-		files: make([]*primitives.File, MAX_FILES),
+		fileElements: make(map[string]*primitives.FileElement),
 		nextID: 1,
+		dataRepliesChannel: make(chan *primitives.DataReply),
+		waitingDataReplies: make([]WaitingDataElement, 0, MAX_WAITING_DATA_ELENENTS),
 		newMsgChannel: channel,
 		muxPeers: sync.Mutex{},
 		muxStatus: sync.Mutex{},
@@ -99,12 +115,15 @@ func NewGossiper(clientPort, address, gossiperName, peers string, rtimer int, si
 		muxMsgs: sync.Mutex{},
 	}
 
+	g.routingTable[g.name] = g.addr
+
 	channel <- g.makeServerPacket(nil)
 
 	go g.listenPeers(simple)
-	go g.antiEntropy()
+	//go g.antiEntropy()
 	go g.listenClient(simple)
 	if rtimer > 0 { go g.sendRouteRumorMessages(rtimer) }
+	go g.listenDataReplies()
 
 	return
 }
@@ -158,6 +177,116 @@ func (g *Gossiper) unlockMsgs() {
 	g.muxMsgs.Unlock()
 	//fmt.Println(g.addr.String()+" UNLOCKED")
 }
+
+func (g *Gossiper) lockDataReplies() {
+	g.muxDataReplies.Lock()
+	//fmt.Println(g.addr.String()+" LOCKED")
+}
+
+func (g *Gossiper) unlockDataReplies() {
+	g.muxDataReplies.Unlock()
+	//fmt.Println(g.addr.String()+" UNLOCKED")
+}
+
+func (g * Gossiper) removeDataReply(element *WaitingDataElement) {
+
+	g.lockDataReplies()
+
+	sz := len(g.waitingDataReplies)
+
+	for i, e := range g.waitingDataReplies {
+
+		if e == *element {
+
+			if i + 1 < sz {
+				g.waitingDataReplies = append(g.waitingDataReplies[:i], g.waitingDataReplies[i+1:]...)
+			} else {
+				g.waitingDataReplies = g.waitingDataReplies[:i]
+			}
+
+			break
+
+		}
+
+	}
+
+	g.unlockDataReplies()
+
+}
+
+func (g *Gossiper) getElem(hash string) (ret *primitives.FileElement) {
+
+	g.lockDataReplies()
+
+	for _, e := range g.waitingDataReplies {
+
+		if e.elem.Hash == hash {
+
+			ret = e.elem
+
+			break
+
+		}
+
+	}
+
+	g.unlockDataReplies()
+
+	return
+
+}
+
+func (g *Gossiper) updateDataReply(hash string) (ret string) {
+
+	g.lockDataReplies()
+
+	sz := len(g.waitingDataReplies)
+
+	for i, e := range g.waitingDataReplies {
+
+		if e.elem.Hash == hash {
+
+			elem := e.elem
+
+			if elem.Next != nil {
+
+				fmt.Println("Waiting updated : "+hash+" -> "+e.elem.Next.Hash)
+
+				g.waitingDataReplies[i].elem = e.elem.Next
+
+				ret = e.elem.Next.Hash
+
+			} else { // remove if last
+
+				if i + 1 < sz {
+					g.waitingDataReplies = append(g.waitingDataReplies[:i], g.waitingDataReplies[i+1:]...)
+				} else {
+					g.waitingDataReplies = g.waitingDataReplies[:i]
+				}
+			}
+
+			break
+
+		}
+
+	}
+
+	g.unlockDataReplies()
+
+	return
+
+}
+
+func (g * Gossiper) appendDataReply(element *WaitingDataElement) {
+
+	g.lockDataReplies()
+
+	g.waitingDataReplies = append(g.waitingDataReplies, *element)
+
+	g.unlockDataReplies()
+
+}
+
 
 /*func (g *Gossiper) getStatus(peer string) {
 
@@ -572,7 +701,7 @@ func (g *Gossiper) populateDSDV(rumor *primitives.RumorMessage, from *net.UDPAdd
 func (g *Gossiper) sendRouteRumorMessages(rtimer int) {
 
 	var pckt = &primitives.ClientMessage{}
-	pckt.Private = false
+	pckt.Rumor = true
 
 	g.receiveFromClient(pckt)
 
@@ -662,7 +791,7 @@ func (g *Gossiper) receiveFromClient(clientPacket *primitives.ClientMessage) {
 			g.conn.WriteToUDP(packetBytes, &p)
 		}
 
-	} else if !clientPacket.Private { // Rumor
+	} else if clientPacket.Rumor { // Rumor
 
 		var rumor = &primitives.RumorMessage{}
 
@@ -682,13 +811,12 @@ func (g *Gossiper) receiveFromClient(clientPacket *primitives.ClientMessage) {
 
 		g.doRumorStep(rumor, g.getRandomPeer())
 
-	} else { // PrivateMessage
+	} else if clientPacket.Private { // PrivateMessage
 
 		privateMessage := &primitives.PrivateMessage{}
+		privateMessage.Text = clientPacket.Text
 
-		to := clientPacket.To
-
-		_, exists := g.routingTable[to]
+		_, exists := g.routingTable[clientPacket.To]
 
 		if !exists {
 			return
@@ -696,18 +824,41 @@ func (g *Gossiper) receiveFromClient(clientPacket *primitives.ClientMessage) {
 
 		privateMessage.Origin = g.name
 		privateMessage.ID = 0
-		privateMessage.Text = clientPacket.Text
-		privateMessage.Destination = to
 		privateMessage.HopLimit = HOP_LIMIT
+		privateMessage.Destination = clientPacket.To
 
+		g.sendPrivateMessage(&primitives.GossipPacket{Private:privateMessage})
 
-		g.sendPrivateMessage(privateMessage, to)
+	} else if clientPacket.DataRequest != nil {
+
+		dataRequest := clientPacket.DataRequest
+
+		_, exists := g.routingTable[dataRequest.Destination]
+
+		if !exists {
+			return
+		}
+
+		dataRequest.Origin = g.name
+		dataRequest.HopLimit = HOP_LIMIT
+
+		g.sendDataRequest(dataRequest, false, nil)
+
+	} else if clientPacket.NewFile != "" {
+
+		fmt.Println("newfile")
+
+		g.NotifyFile(clientPacket.NewFile, "")
+
+		fmt.Println("new file added")
 
 	}
 
 }
 
 func (g *Gossiper) receiveFromPeer(packet *primitives.GossipPacket, from *net.UDPAddr) {
+
+	fmt.Println("received pckt")
 
 	g.checkNewPeer(from)
 
@@ -764,31 +915,94 @@ func (g *Gossiper) receiveFromPeer(packet *primitives.GossipPacket, from *net.UD
 
 		}
 
-	} else if packet.Private != nil { // Private
+	} else if packet.Private != nil ||
+		packet.DataRequest != nil || packet.DataReply != nil { // Private
+
+		fmt.Println("received private msg or data req or data rep")
+
+		isPrivate := packet.Private != nil
+
+		destination, origin := g.getDestinationOrigin(packet)
 
 		msg := packet.Private
 
-		g.writeMessagePeer(packet, from)
+		if isPrivate { g.writeMessagePeer(packet, from) }
 
-		if msg.Destination == g.name {
+		if destination == g.name {
 
-			origin := msg.Origin
+			fmt.Println("received private message addressed to me")
 
-			if g.receivedPrivateMsgs[origin] == nil {
+			if isPrivate {
+				if g.receivedPrivateMsgs[origin] == nil {
 
-				g.receivedPrivateMsgs[origin] = make([]primitives.PrivateMessage, 0, MAX_MSG)
+					g.receivedPrivateMsgs[origin] = make([]primitives.PrivateMessage, 0, MAX_MSG)
 
+				}
+
+				g.receivedPrivateMsgs[origin] = append(g.receivedPrivateMsgs[origin], *msg)
+
+				fmt.Println("received private message "+packet.Private.Text+" from "+packet.Private.Origin)
+
+				g.newMsgChannel <- g.makeServerPacket(packet)
+
+			} else {
+				if packet.DataReply != nil {
+
+					fmt.Println("Received data reply "+hex.EncodeToString(packet.DataReply.HashValue))
+
+					dataReply := packet.DataReply
+
+					if g.checkHash(&dataReply.HashValue, &dataReply.Data) {
+
+						g.dataRepliesChannel <- dataReply
+
+					} else {
+						fmt.Println("hash error")
+					}
+
+
+				} else { // req
+
+					elem := g.fileElements[hex.EncodeToString(packet.DataRequest.HashValue)] // TODO concurrency
+
+					fmt.Println("Received data request "+hex.EncodeToString(packet.DataRequest.HashValue))
+
+					if elem != nil {
+
+						resp := &primitives.DataReply{}
+
+						resp.HashValue = packet.DataRequest.HashValue
+						resp.Origin = g.name
+						resp.Destination = packet.DataRequest.Origin
+						resp.HopLimit = HOP_LIMIT
+
+						f, err := os.OpenFile(SHARED_FILES_PREFIX+elem.Name, os.O_RDONLY, 0666)
+						utils.CheckError(err)
+						defer f.Close()
+
+						buf := make([]byte, CHUNK_SIZE)
+
+						sz, err := f.Read(buf)
+						utils.CheckError(err)
+
+						resp.Data = buf[:sz]
+
+						fmt.Println(sz > 0)
+
+						fmt.Println(g.checkHash(&packet.DataRequest.HashValue, &resp.Data))
+
+						g.sendPrivateMessage(&primitives.GossipPacket{DataReply: resp})
+
+						fmt.Println("Sent data reply : "+elem.Hash)
+
+					}
+
+				}
 			}
-
-			g.receivedPrivateMsgs[origin] = append(g.receivedPrivateMsgs[origin], *msg)
-
-			g.newMsgChannel <- g.makeServerPacket(packet)
 
 		} else {
 
-			msg.HopLimit -= 1
-
-			g.sendPrivateMessage(msg, msg.Destination)
+			g.sendPrivateMessage(packet)
 
 		}
 
@@ -819,6 +1033,275 @@ func (g *Gossiper) receiveFromPeer(packet *primitives.GossipPacket, from *net.UD
 
 	}
 
+}
+
+func (g *Gossiper) notifyReply(reply *primitives.DataReply) {
+
+	g.lockDataReplies()
+
+	fmt.Println("reply notified")
+
+	for _, e := range g.waitingDataReplies {
+
+		if e.elem.Hash == hex.EncodeToString(reply.HashValue[:]) {
+
+			fmt.Println("notified to channel")
+
+			e.Channel <- reply
+
+			g.unlockDataReplies()
+
+			return
+
+		}
+
+	}
+
+	g.unlockDataReplies()
+
+}
+
+func (g *Gossiper) listenDataReplies() {
+
+
+	for {
+
+		reply := <- g.dataRepliesChannel
+
+		g.notifyReply(reply)
+
+	}
+
+
+}
+
+func (g *Gossiper) waitDataReply(dataRequest *primitives.DataRequest,
+	channel chan *primitives.DataReply) {
+
+	var ticker = time.NewTicker(time.Second)
+
+	defer ticker.Stop()
+
+	select {
+
+		case <- ticker.C:
+			fmt.Println("Timeout from waitDataReply")
+			g.sendDataRequest(dataRequest, true, channel)
+
+		case reply := <- channel:
+			hash := hex.EncodeToString(reply.HashValue[:])
+			elem, exists := g.fileElements[hash]
+
+			fmt.Println("waitDataReply received data")
+
+			if !exists { // meta
+
+				fmt.Println("meta")
+
+				elem = g.getElem(hash)
+				fmt.Println("dd")
+
+				// construct chunks
+				g.constructFileChunks(reply, elem)
+
+				fmt.Println("chunks constructed")
+
+			} else {
+
+				fmt.Println("chunk : "+elem.Name)
+
+				// write data to corresponding file
+				f, err := os.OpenFile(DOWNLOADED_FILES_PREFIX+elem.Name,
+					os.O_WRONLY|os.O_CREATE, 0666)
+				utils.CheckError(err)
+
+				f.Write(reply.Data)
+
+				f.Close()
+
+				if elem.Next == nil { // last chunk
+					// add total size and set complete to true and reconstruct
+					g.reconstructFile(elem.File)
+
+					return
+
+				}
+
+			}
+
+			nextHash := g.updateDataReply(elem.Hash)
+			fmt.Println("Next hash : "+nextHash)
+
+			// nextHash shouldn't be ""
+
+			dataRequest.HopLimit = HOP_LIMIT
+			v, err := hex.DecodeString(nextHash)
+			utils.CheckError(err)
+
+			dataRequest.HashValue = v
+
+			g.sendPrivateMessage(&primitives.GossipPacket{DataRequest:dataRequest})
+
+			ticker.Stop()
+
+			g.waitDataReply(dataRequest, channel)
+
+
+	}
+
+}
+
+func (g *Gossiper) reconstructFile(file *primitives.File) {
+
+	// write the final file to the right directory, update size, set complete to true
+
+	filePath := DOWNLOADED_FILES_PREFIX+file.Name
+
+	f, err := os.OpenFile(filePath, // TODO directory etc
+		os.O_WRONLY|os.O_CREATE, 0666)
+	utils.CheckError(err)
+
+	defer f.Close()
+
+	size := int64(0)
+
+
+	currentElem := file.First.Next
+
+	for currentElem != nil {
+
+		currPath := DOWNLOADED_FILES_PREFIX+currentElem.Name
+
+		f_chunk, err := os.OpenFile(currPath,
+			os.O_RDONLY, 0666)
+		utils.CheckError(err)
+
+		sz, err := io.Copy(f, f_chunk)
+		utils.CheckError(err)
+
+		size += sz
+
+		f_chunk.Close()
+
+		currentElem = currentElem.Next
+	}
+
+	file.Size = size
+
+	// at the end
+	file.Complete = true
+
+}
+
+func (g *Gossiper) constructFileChunks(reply *primitives.DataReply,
+	first *primitives.FileElement) {
+
+	name := reply.Origin+"_"+first.Hash
+
+	fmt.Println("CONSTRUCTING FILE CHUNKS")
+	fmt.Println("FIRST : "+first.Hash)
+	fmt.Println("NAME : "+name)
+
+	file := &primitives.File{Name: name, Complete: false}
+
+	first.Name =  name+"_meta"
+	first.File =  file
+
+	file.First = first
+
+	oldElem := first
+
+	metadata := reply.Data
+
+	f, err := os.OpenFile(DOWNLOADED_FILES_PREFIX+first.Name,
+		os.O_WRONLY|os.O_CREATE, 0666)
+	utils.CheckError(err)
+
+	f.Write(reply.Data)
+
+	f.Close()
+
+	currentChunkIndex := 0
+
+	file.MetaData = metadata[:]
+
+	fmt.Println(len(metadata) > 0)
+	fmt.Println(len(metadata) % 32 == 0)
+
+	g.fileElements[first.Hash] = first
+
+	for currentChunkIndex < len(metadata) {
+
+		chunkHash := metadata[currentChunkIndex:currentChunkIndex + 32]
+
+		currentElem := &primitives.FileElement{
+			Hash: hex.EncodeToString(chunkHash[:]),
+			Name: name+"_"+strconv.Itoa(currentChunkIndex),
+			File: file,
+		}
+
+		oldElem.Next = currentElem
+		oldElem = currentElem
+
+		g.fileElements[currentElem.Hash] = currentElem
+
+		currentChunkIndex += 32
+
+	}
+
+	fmt.Println("CONSTRUCTED CHUNKS :")
+	curr := file.First
+	for curr != nil {
+
+		fmt.Println(curr.Hash+" -> ")
+
+		curr = curr.Next
+	}
+
+}
+
+func (g *Gossiper) sendDataRequest(dataRequest *primitives.DataRequest, timeout bool,
+	channel chan *primitives.DataReply) {
+
+	if !timeout {
+		channel = make (chan *primitives.DataReply)
+		first := &primitives.FileElement{Hash: hex.EncodeToString(dataRequest.HashValue[:])}
+		g.appendDataReply(
+			&WaitingDataElement{
+				channel,
+				first,
+				// TODO add methsh array
+			})
+	} else {
+
+	}
+
+	g.sendPrivateMessage(&primitives.GossipPacket{DataRequest:dataRequest})
+
+	go g.waitDataReply(dataRequest, channel)
+
+
+
+}
+
+
+func (g *Gossiper) checkHash(hash *[]byte, data *[]byte) bool {
+
+	h := sha256.Sum256(*data)
+
+	return bytes.Equal(*hash, h[:])
+}
+
+func (g *Gossiper) getDestinationOrigin(packet *primitives.GossipPacket) (dest, orig string) {
+	if packet.Private != nil {
+		dest, orig =  packet.Private.Destination, packet.Private.Origin
+	} else if packet.DataRequest != nil {
+		dest, orig = packet.DataRequest.Destination, packet.DataRequest.Origin
+	} else if packet.DataReply != nil {
+		dest, orig = packet.DataReply.Destination, packet.DataReply.Origin
+	}
+
+	return
 }
 
 func (g *Gossiper) makeServerPacket(gossipPacket *primitives.GossipPacket) (packet *primitives.ServerPacket) {
@@ -852,8 +1335,6 @@ func (g *Gossiper) makeServerPacket(gossipPacket *primitives.GossipPacket) (pack
 	packet.Peers = &peersString
 
 	var contacts []string
-
-	fmt.Println("CONTACTS : "+strconv.Itoa(len(g.routingTable)))
 
 	for contact := range g.routingTable {
 		contacts = append(contacts, contact)
@@ -904,13 +1385,22 @@ func (g *Gossiper) sendRumorPacket(from string, to *net.UDPAddr, id uint32) {
 
 }
 
-func (g *Gossiper) sendPrivateMessage(msg *primitives.PrivateMessage, to string) {
+func (g *Gossiper) sendPrivateMessage(packet *primitives.GossipPacket) {
 
-	packet := primitives.GossipPacket{
-		Private: msg,
+	var to string
+
+	if packet.Private != nil {
+		packet.Private.HopLimit -= 1
+		to = packet.Private.Destination
+	} else if packet.DataRequest != nil {
+		packet.DataRequest.HopLimit -= 1
+		to = packet.DataRequest.Destination
+	} else if packet.DataReply != nil {
+		packet.DataReply.HopLimit -= 1
+		to = packet.DataReply.Destination
 	}
 
-	packetByte, err := protobuf.Encode(&packet)
+	packetByte, err := protobuf.Encode(packet)
 	utils.CheckError(err)
 
 	g.conn.WriteToUDP(packetByte, g.routingTable[to])
@@ -1121,31 +1611,48 @@ func (g * Gossiper) writeMessagePeer(packet *primitives.GossipPacket, from *net.
 
 }
 
-func (g *Gossiper) NotifyFile(name string) {
+func (g *Gossiper) NotifyFile(name string, prepend string) {
 
-	f, errFile := os.OpenFile(name, os.O_RDONLY, 0666)
+	filePath := prepend+SHARED_FILES_PREFIX+name
+
+	f, errFile := os.OpenFile(filePath, os.O_RDONLY, 0666)
 	utils.CheckError(errFile)
 	defer f.Close()
 
-	f_meta, err := os.OpenFile(name+"_meta", os.O_RDWR|os.O_CREATE, 0666)
+	metaName := name+"_meta"
+	metaPath := prepend+SHARED_FILES_PREFIX+metaName
+
+	f_meta, err := os.OpenFile(metaPath, os.O_RDWR|os.O_CREATE, 0666)
 	utils.CheckError(err)
 	defer f_meta.Close()
 
 	counter := 0
+
+	file := &primitives.File{Name: name, Complete: true}
+
+	metaFileElement := &primitives.FileElement{Name: metaName, File: file}
+
+	file.First = metaFileElement
+
+	var oldElem = metaFileElement
+	var currentElem *primitives.FileElement
 
 
 	for errFile != io.EOF {
 
 		var sz = 0
 
-		buf := make([]byte, 8000)
+		buf := make([]byte, CHUNK_SIZE)
 		sz, errFile = f.Read(buf)
 
 		if sz == 0 && errFile == io.EOF {
 			break
 		}
 
-		f_out, err := os.OpenFile(name+"_"+strconv.Itoa(counter),
+		chunkName := name+"_"+strconv.Itoa(counter)
+		chunkPath := prepend+SHARED_FILES_PREFIX+chunkName
+
+		f_out, err := os.OpenFile(chunkPath,
 			os.O_WRONLY|os.O_CREATE, 0666)
 		utils.CheckError(err)
 
@@ -1158,30 +1665,53 @@ func (g *Gossiper) NotifyFile(name string) {
 
 		f_out.Close()
 
+		currentElem = &primitives.FileElement{
+			Hash: hex.EncodeToString(h[:]),
+			Name: chunkName,
+			File: file,
+		}
+
+		oldElem.Next = currentElem
+		oldElem = currentElem
+
 		counter += 1
 	}
 
 	h := sha256.New()
+	f_meta.Seek(0, 0)
 	_, err = io.Copy(h, f_meta)
+	utils.CheckError(err)
+
+	_, err = f_meta.Read(file.MetaData)
 	utils.CheckError(err)
 
 	f_stat, err := f.Stat()
 	utils.CheckError(err)
 
-	newFile := &primitives.File{
-		Name: f_stat.Name(),
-		Size: f_stat.Size(),
-		Meta: f_stat.Name()+"_meta",
-		SHA: h.Sum(nil),
-	}
+	file.Size = f_stat.Size()
+	file.First.Hash = hex.EncodeToString(h.Sum(nil)[:])
 
-	g.addFile(newFile)
+	fmt.Println("New file : "+file.First.Hash)
+
+	g.addFile(file)
 
 }
 
 func (g *Gossiper) addFile(file *primitives.File) {
 
-	g.files = append(g.files, file) // TODO
+	// TODO concurrency
+
+	curr := file.First
+
+	fmt.Println("FILE ADDED : ")
+
+	for curr != nil {
+		g.fileElements[curr.Hash] = curr
+
+		fmt.Println(curr.Hash+" -> ")
+
+		curr = curr.Next
+	}
 
 }
 

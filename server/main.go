@@ -87,10 +87,6 @@ func update(w http.ResponseWriter, r *http.Request) {
 
 	utils.CheckError(err)
 
-	if data == nil {
-		fmt.Println("ASDFADFASDFSAFDSADFASFSDFSADFASDFASDFSADFSDF")
-	}
-
 	w.Header().Set("Content-Type", "application/json")
 
 	_, err = w.Write(data)
@@ -171,18 +167,19 @@ func newFile(w http.ResponseWriter, r *http.Request) {
 
 	file, handler, err := r.FormFile("file")
 	utils.CheckError(err)
-	defer file.Close()
 
 	// copy example
 	f, err := os.OpenFile("../_SharedFiles/"+handler.Filename, os.O_WRONLY|os.O_CREATE, 0666)
 	utils.CheckError(err)
-	defer f.Close()
 	io.Copy(f, file)
+
+	file.Close()
+	f.Close()
 
 	id, err := strconv.Atoi(r.FormValue("id"))
 	utils.CheckError(err)
 
-	gossipers[id].G.NotifyFile(f.Name())
+	gossipers[id].G.NotifyFile(handler.Filename, "../")
 
 }
 

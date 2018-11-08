@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/hex"
 	"flag"
 	"fmt"
 	"github.com/Korf74/Peerster/primitives"
@@ -23,6 +24,9 @@ func main() {
 	var msg = flag.String("msg", "",
 		"message to be sent")
 
+	var request = flag.String("request", "",
+		"request a chunk or metafile of this hash")
+
 	flag.Parse()
 
 	var udpAddrRemote, err1 = net.ResolveUDPAddr("udp4", "127.0.0.1:"+*UIPort)
@@ -33,16 +37,34 @@ func main() {
 
 	var pckt = primitives.ClientMessage{}
 
-	var filePath = "../_SharedFiles/"+*file
-	fmt.Println(filePath)
-
 	pckt.Text = *msg
 
-	if *dest != "" {
-		pckt.Private = true
+	if *file != "" {
+		pckt.NewFile = *file
+	} else if *dest != "" {
+
+		if *request != "" {
+			if len(*request) != 64 {
+				fmt.Println("Incorrect hash")
+				return
+			}
+
+			hash, err := hex.DecodeString(*request)
+			utils.CheckError(err)
+
+			pckt.DataRequest = &primitives.DataRequest{
+				Destination: *dest,
+				HashValue: hash,
+			}
+
+			fmt.Println("sending data req")
+
+		} else {
+			pckt.Private = true
+		}
 		pckt.To = *dest
 	} else {
-		pckt.Private = false
+		pckt.Rumor = true
 	}
 
 	var packetBytes, err4 = protobuf.Encode(&pckt)
