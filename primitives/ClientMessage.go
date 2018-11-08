@@ -7,4 +7,5 @@ type ClientMessage struct {
 	DataRequest *DataRequest
 	NewFile string
 	To string
+	FileName string
 }

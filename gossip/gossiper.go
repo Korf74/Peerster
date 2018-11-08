@@ -842,7 +842,7 @@ func (g *Gossiper) receiveFromClient(clientPacket *primitives.ClientMessage) {
 		dataRequest.Origin = g.name
 		dataRequest.HopLimit = HOP_LIMIT
 
-		g.sendDataRequest(dataRequest, false, nil)
+		g.sendDataRequest(dataRequest, clientPacket.FileName, false, nil)
 
 	} else if clientPacket.NewFile != "" {
 
@@ -1086,7 +1086,7 @@ func (g *Gossiper) waitDataReply(dataRequest *primitives.DataRequest,
 
 		case <- ticker.C:
 			fmt.Println("Timeout from waitDataReply")
-			g.sendDataRequest(dataRequest, true, channel)
+			g.sendDataRequest(dataRequest, "", true, channel)
 
 		case reply := <- channel:
 			hash := hex.EncodeToString(reply.HashValue[:])
@@ -1196,16 +1196,16 @@ func (g *Gossiper) reconstructFile(file *primitives.File) {
 func (g *Gossiper) constructFileChunks(reply *primitives.DataReply,
 	first *primitives.FileElement) {
 
-	name := reply.Origin+"_"+first.Hash
+	file := first.File
 
 	fmt.Println("CONSTRUCTING FILE CHUNKS")
 	fmt.Println("FIRST : "+first.Hash)
-	fmt.Println("NAME : "+name)
+	fmt.Println("NAME : "+file.Name)
 
-	file := &primitives.File{Name: name, Complete: false}
+	name := file.Name
 
-	first.Name =  name+"_meta"
-	first.File =  file
+	first.Name = name+"_meta"
+	first.File = file
 
 	file.First = first
 
@@ -1260,12 +1260,26 @@ func (g *Gossiper) constructFileChunks(reply *primitives.DataReply,
 
 }
 
-func (g *Gossiper) sendDataRequest(dataRequest *primitives.DataRequest, timeout bool,
+func (g *Gossiper) sendDataRequest(dataRequest *primitives.DataRequest,
+	fileName string,
+	timeout bool,
 	channel chan *primitives.DataReply) {
+
+	hashString := hex.EncodeToString(dataRequest.HashValue[:])
+
+	_, exists := g.fileElements[hashString]
+
+	if exists {
+		return
+	}
 
 	if !timeout {
 		channel = make (chan *primitives.DataReply)
-		first := &primitives.FileElement{Hash: hex.EncodeToString(dataRequest.HashValue[:])}
+		file := &primitives.File{Name: fileName, Complete: false}
+		first := &primitives.FileElement{
+			Hash: hashString,
+			File: file,
+		}
 		g.appendDataReply(
 			&WaitingDataElement{
 				channel,

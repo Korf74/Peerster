@@ -19,7 +19,7 @@ func main() {
 		"destination for the private message")
 
 	var file = flag.String("file", "",
-		"file to be indexed by the gossiper")
+		"file to be indexed by the gossiper, or filename of the requested file")
 
 	var msg = flag.String("msg", "",
 		"message to be sent")
@@ -38,12 +38,13 @@ func main() {
 	var pckt = primitives.ClientMessage{}
 
 	pckt.Text = *msg
+	pckt.FileName = *file
 
-	if *file != "" {
+	if *file != "" && *request == "" {
 		pckt.NewFile = *file
 	} else if *dest != "" {
 
-		if *request != "" {
+		if *request != "" && *file != "" {
 			if len(*request) != 64 {
 				fmt.Println("Incorrect hash")
 				return
