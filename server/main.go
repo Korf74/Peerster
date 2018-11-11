@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"github.com/Korf74/Peerster/gossip"
@@ -36,6 +37,13 @@ type updateMessage struct {
 	PrivateMessages []peerMessage
 	Peers []string
 	Contacts []string
+}
+
+type downloadMessage struct {
+	MetaHash string `json:"metaHash"`
+	Contact string `json:"contact"`
+	FileName string `json:"fileName"`
+	GossipID int `json:"id"`
 }
 
 type peerMessage struct {
@@ -150,6 +158,44 @@ func newPeer(w http.ResponseWriter, r *http.Request) {
 
 }
 
+func download(w http.ResponseWriter, r *http.Request) {
+
+	var body, err = ioutil.ReadAll(r.Body)
+	utils.CheckError(err)
+
+	body = bytes.TrimPrefix(body, []byte("\xef\xbb\xbf"))
+
+	var msg = downloadMessage{}
+	err = json.Unmarshal(body, &msg)
+	utils.CheckError(err)
+
+	req := &primitives.DataRequest{}
+	hash, err := hex.DecodeString(msg.MetaHash)
+	if err != nil {
+		return
+	}
+
+	req.HashValue = hash
+	req.Destination = msg.Contact
+
+	packetBytes, err := protobuf.Encode(&primitives.ClientMessage{
+		DataRequest: req, To: msg.Contact, FileName: msg.FileName,
+	})
+	utils.CheckError(err)
+
+	gossiper := gossipers[msg.GossipID]
+
+	udpConn, err := net.DialUDP("udp4", nil, gossiper.Addr)
+	utils.CheckError(err)
+
+	_, err = udpConn.Write(packetBytes)
+	utils.CheckError(err)
+
+	udpConn.Close()
+
+
+}
+
 func newFile(w http.ResponseWriter, r *http.Request) {
 
 	/*var body, err = ioutil.ReadAll(r.Body)
@@ -179,7 +225,7 @@ func newFile(w http.ResponseWriter, r *http.Request) {
 	id, err := strconv.Atoi(r.FormValue("id"))
 	utils.CheckError(err)
 
-	gossipers[id].G.NotifyFile(handler.Filename, "../")
+	gossipers[id].G.NotifyFile(handler.Filename)
 
 }
 
@@ -322,6 +368,7 @@ func main() {
 	r.Methods("POST").Subrouter().HandleFunc("/getMessages", update)//HandleFunc("/", newMsg)
 	r.Methods("POST").Subrouter().HandleFunc("/createGossiper", createGossiper)//HandleFunc("/", newMsg)
 	r.Methods("POST").Subrouter().HandleFunc("/newFile", newFile)//HandleFunc("/", newMsg)
+	r.Methods("POST").Subrouter().HandleFunc("/download", download)//HandleFunc("/", newMsg)
 	r.Handle("/", http.FileServer(http.Dir(".")))
 
 	log.Println(http.ListenAndServe(":8080", r))

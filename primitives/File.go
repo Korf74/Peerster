@@ -4,7 +4,6 @@ type File struct {
 	Name string
 	Size int64
 	First *FileElement
-	MetaData []byte
 	Complete bool
 }
 

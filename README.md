@@ -80,5 +80,26 @@ The way I coded my server permits you to open the page several times to create s
 
 However please be careful that since the page queries the server periodically, you shouldn't have an old GUI page open while rebooting the server (it might cause errors), simply close the page if you want to reboot the server.
 
+## Second Homework
+
+### Routing
+
+A routing table was added with a regular poll permetting to populate a DSDV table correpsponding to the possible contacts. This permits to have point to point messaging with private messages and file sharing.
+
+### Private messages
+
+To use private messages, on the GUI you can select via radio buttons the contact you want to communicate with, this will show the private chatroom corresponding to this contact.
+
+With the CLI use the *-dest* option.
+
+### File sharing
+
+To use file sharing you first need to have files available in the directory *_SharedFiles*, either do it manually or use the uploading option from the GUI.
+
+When indexing a file to the gossiper (done withing the upload with the GUI, or with the *-file* option with the CLI), you can get the metadata corresponding to the metafile. This hash can be used to query files to other peers if they have it.
+
+Using the GUI, fill the form on the top of the page with the hash of the metafile, the contact to ask to and the name of the file. Using the CLI, use *-file* and *-dest*.
+
+For now, there is a bug for which it won't work for too big files but it works well for smaller files.
 
 

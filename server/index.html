@@ -848,13 +848,10 @@ Website: http://emilcarlsson.se/
             </button>
         </div>
         <div class="contacts">
-            <input type="file" id="filePicker">
-            <button id="shareFileButton">Share</button>
             <form id="fileForm"enctype="multipart/form-data">
                 <input id="fileInput" name="file" type="file" />
                 <input id="shareFileButton2" type="button" value="Upload" />
             </form>
-            <progress></progress>
             <p>PEERS : </p>
             <ul class="peer">
                 <li class="contact"><div class="wrap"><div class="meta"><p class="name">TestP</p></div></div></li>
@@ -868,7 +865,10 @@ Website: http://emilcarlsson.se/
     </div>
     <div class="content">
         <div class="contact-profile">
-            <p class="peerName">PEER NAME</p>
+            <input id="downloadMeta" type="text" placeholder="File MetaHash..."/>
+            <input id="downloadContact" type="text" size="5%" placeholder="Contact..."/>
+            <input id="downloadFileName" type="text" size="5%" placeholder="File Name..."/>
+            <button id="download">Download</button>
         </div>
         <div class="messages">
             <ul>
@@ -1002,6 +1002,27 @@ function update() {
 
 $('.submit').click(function () {
     newMessage();
+});
+
+$('#download').click(function() {
+
+    hash = $('#downloadMeta').val();
+    contact = $('#downloadContact').val();
+    fileName = $('#downloadFileName').val();
+
+    $.post("/download",
+            JSON.stringify({
+                metaHash: hash,
+                contact: contact,
+                fileName: fileName,
+                id: gossipID
+            }),
+            function (data, status) {
+
+            },
+            "json"
+    );
+
 });
 
 $('#shareFileButton').click(function() {
