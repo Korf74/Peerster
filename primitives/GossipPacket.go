@@ -7,4 +7,6 @@ type GossipPacket struct {
 	Private *PrivateMessage
 	DataRequest *DataRequest
 	DataReply *DataReply
+	SearchRequest *SearchRequest
+	SearchReply *SearchReply
 }
