@@ -14,6 +14,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strconv"
 	"strings"
@@ -32,6 +33,7 @@ const HOP_LIMIT = 10
 const MAX_FILES = 100
 const MAX_WAITING_DATA_ELENENTS = 300
 const CHUNK_SIZE = 8192
+const MAX_SEARCH_REQUESTS = 2048
 
 /* TODO IDEA : a function that receives channels and statuses and pair them, if new status
 ** TODO wihout chennel -> create
@@ -44,6 +46,11 @@ const CHUNK_SIZE = 8192
 type WaitingDataElement struct {
 	Channel chan *primitives.DataReply
 	elem *primitives.FileElement
+}
+
+type PeerFileInfo struct {
+	Peer string
+	MetaHash string
 }
 
 type Gossiper struct {
@@ -63,6 +70,9 @@ type Gossiper struct {
 	receivedPrivateMsgs map[string][]primitives.PrivateMessage
 	routingTable map[string]*net.UDPAddr
 	fileElements map[string]*primitives.FileElement
+	peerFiles map[string]*PeerFileInfo
+	files []*primitives.File
+	currentSearchRequests []*primitives.SearchRequest
 	nextID uint32
 	dataRepliesChannel chan *primitives.DataReply
 	waitingDataReplies []*WaitingDataElement
@@ -73,6 +83,7 @@ type Gossiper struct {
 	muxThreads sync.Mutex
 	muxMsgs sync.Mutex
 	muxDataReplies sync.Mutex
+	muxSearchRequests sync.Mutex
 
 }
 
@@ -121,6 +132,9 @@ func NewGossiper(clientPort, address, gossiperName, peers string, rtimer int, si
 		receivedPrivateMsgs: make(map[string][]primitives.PrivateMessage),
 		routingTable: make(map[string]*net.UDPAddr),
 		fileElements: make(map[string]*primitives.FileElement),
+		peerFiles: make(map[string]*PeerFileInfo),
+		files: make([]*primitives.File, 0, MAX_FILES),
+		currentSearchRequests: make([]*primitives.SearchRequest, 0, MAX_SEARCH_REQUESTS),
 		nextID: 1,
 		dataRepliesChannel: make(chan *primitives.DataReply, MAX_CHANNEL_BUFFER),
 		waitingDataReplies: make([]*WaitingDataElement, 0, MAX_WAITING_DATA_ELENENTS),
@@ -130,6 +144,7 @@ func NewGossiper(clientPort, address, gossiperName, peers string, rtimer int, si
 		muxThreads: sync.Mutex{},
 		muxChannels: sync.Mutex{},
 		muxMsgs: sync.Mutex{},
+		muxSearchRequests: sync.Mutex{},
 	}
 
 	g.routingTable[g.name] = g.addr
@@ -152,6 +167,16 @@ func (g *Gossiper) lockPeers() {
 
 func (g *Gossiper) unlockPeers() {
 	g.muxPeers.Unlock()
+	//fmt.Println(g.addr.String()+" UNLOCKED")
+}
+
+func (g *Gossiper) lockSearchRequests() {
+	g.muxSearchRequests.Lock()
+	//fmt.Println(g.addr.String()+" LOCKED")
+}
+
+func (g *Gossiper) unlockSearchRequests() {
+	g.muxSearchRequests.Unlock()
 	//fmt.Println(g.addr.String()+" UNLOCKED")
 }
 
@@ -204,6 +229,60 @@ func (g *Gossiper) unlockDataReplies() {
 	g.muxDataReplies.Unlock()
 	//fmt.Println(g.addr.String()+" UNLOCKED")
 }
+
+func (g *Gossiper) addSearchRequest(sr *primitives.SearchRequest) bool {
+
+	g.muxSearchRequests.Lock()
+
+	for _, r := range(g.currentSearchRequests) {
+
+		if r.Origin == sr.Origin && utils.ArrayEqual(r.Keywords, sr.Keywords) {
+			g.unlockSearchRequests()
+			return false
+		}
+
+	}
+
+	g.currentSearchRequests = append(g.currentSearchRequests, sr)
+
+	g.unlockSearchRequests()
+
+	go g.waitSearchRequestTimeout(sr)
+
+	return true
+
+}
+
+func (g *Gossiper) waitSearchRequestTimeout(sr *primitives.SearchRequest) {
+
+	var ticker = time.NewTicker(500 * time.Millisecond)
+
+	defer ticker.Stop()
+
+	select {
+		case <- ticker.C: {
+			g.lockSearchRequests()
+			idx := 0
+			for i, r := range g.currentSearchRequests {
+				if r == sr {
+					idx = i
+					break
+				}
+			}
+
+			sz := len(g.currentSearchRequests)
+
+			g.currentSearchRequests[sz-1], g.currentSearchRequests[idx] =
+			 	g.currentSearchRequests[idx], g.currentSearchRequests[sz-1]
+
+			g.currentSearchRequests = g.currentSearchRequests[:sz - 1]
+
+			g.unlockSearchRequests()
+		}
+	}
+
+}
+
 
 func (g * Gossiper) removeDataReply(element *WaitingDataElement) {
 
@@ -590,6 +669,10 @@ func (g* Gossiper) getRandomPeer() (peer *net.UDPAddr) {
 
 func (g* Gossiper) getRandomPeerExcept(except *net.UDPAddr) (peer *net.UDPAddr) {
 
+	if except == nil {
+		return g.getRandomPeer()
+	}
+
 	if len(g.peers) <= 1 {
 		return nil
 	}
@@ -851,6 +934,18 @@ func (g *Gossiper) receiveFromClient(clientPacket *primitives.ClientMessage) {
 
 		dataRequest := clientPacket.DataRequest
 
+		if dataRequest.Destination == "" {
+
+			file := clientPacket.FileName
+			peerInfo, exists := g.peerFiles[file]
+			if !exists {
+				return // TODO get metafile
+			}
+			dataRequest.Destination = peerInfo.Peer
+			//dataRequest.HashValue = []byte(peerInfo.MetaHash)
+
+		}
+
 		_, exists := g.routingTable[dataRequest.Destination]
 
 		if !exists {
@@ -869,6 +964,22 @@ func (g *Gossiper) receiveFromClient(clientPacket *primitives.ClientMessage) {
 		g.NotifyFile(clientPacket.NewFile)
 
 		fmt.Println("new file added")
+
+	} else if clientPacket.Keywords != nil {
+
+		keywords := clientPacket.Keywords
+		budget := clientPacket.Budget
+
+		if budget > 0 {
+
+			searchRequest := &primitives.SearchRequest{g.name, budget, keywords}
+
+			fmt.Println("Sending search request")
+
+			g.sendSearchRequest(searchRequest, nil)
+
+		}
+
 
 	}
 
@@ -935,13 +1046,16 @@ func (g *Gossiper) receiveFromPeer(packet *primitives.GossipPacket, from *net.UD
 		}
 
 	} else if packet.Private != nil ||
-		packet.DataRequest != nil || packet.DataReply != nil { // Private
+		packet.DataRequest != nil || packet.DataReply != nil ||
+		packet.SearchReply != nil { // Private
 
-		fmt.Println("received private msg or data req or data rep")
+		fmt.Println("received private msg or data req or data rep or search reply")
 
 		isPrivate := packet.Private != nil
 
 		destination, origin := g.getDestinationOrigin(packet)
+
+		fmt.Print("From "+origin+" to "+destination)
 
 		msg := packet.Private
 
@@ -980,7 +1094,7 @@ func (g *Gossiper) receiveFromPeer(packet *primitives.GossipPacket, from *net.UD
 					}
 
 
-				} else { // req
+				} else if packet.DataRequest != nil { // req
 
 					elem := g.fileElements[hex.EncodeToString(packet.DataRequest.HashValue)] // TODO concurrency
 
@@ -1031,6 +1145,25 @@ func (g *Gossiper) receiveFromPeer(packet *primitives.GossipPacket, from *net.UD
 						fmt.Println("elem is nil")
 					}
 
+				} else if packet.SearchReply != nil {
+
+					fmt.Println("Received Search Reply")
+
+					results := packet.SearchReply.Results
+
+					for _, res := range(results) {
+						g.peerFiles[res.FileName] = &PeerFileInfo{origin, string(res.MetafileHash)}
+						fmt.Println("FOUND match "+res.FileName+" at "+origin)
+						fmt.Print("metafile="+string(res.MetafileHash)+" chunks=")
+						for i, c := range(res.ChunkMap) {
+							if i != 0 {
+								fmt.Print(",")
+							}
+							fmt.Print(c)
+						}
+						fmt.Println()
+					}
+
 				}
 			}
 
@@ -1039,6 +1172,56 @@ func (g *Gossiper) receiveFromPeer(packet *primitives.GossipPacket, from *net.UD
 			g.sendPrivateMessage(packet)
 
 		}
+
+	} else if packet.SearchRequest != nil {
+
+		// handle request
+		keywords := packet.SearchRequest.Keywords
+		budget := packet.SearchRequest.Budget
+		origin := packet.SearchRequest.Origin
+
+		var matchingFiles []*primitives.File
+
+		fmt.Println("Received Peer Search Request from "+origin)
+		fmt.Println()
+		for _, keyword := range keywords {
+			fmt.Println(keyword)
+		}
+
+		fmt.Println(len(g.files))
+
+		for _, f := range g.files {
+			for _, keyword := range keywords {
+
+				fmt.Println(f)
+				fmt.Println(f.Name)
+
+				matched, err := regexp.MatchString(".*"+keyword+".*", f.Name)
+				utils.CheckError(err)
+
+				if matched {
+					matchingFiles = append(matchingFiles, f)
+				}
+
+			}
+		}
+
+		fmt.Println("matched : ")
+		for _, m := range(matchingFiles) {
+			fmt.Println(m.Name)
+		}
+
+		// send reply
+		g.sendSearchReply(matchingFiles, origin)
+
+		// change budget and send to neighbours
+		budget -= 1
+		if budget > 0 {
+
+			g.sendSearchRequest(packet.SearchRequest, from)
+
+		}
+
 
 	} else { // Status
 
@@ -1064,6 +1247,121 @@ func (g *Gossiper) receiveFromPeer(packet *primitives.GossipPacket, from *net.UD
 		/*if !waiting {
 			go g.waitStatusAck(from, nil)
 		}*/
+
+	}
+
+}
+
+func (g *Gossiper) chunkMapFromCount(count uint64) []uint64 {
+
+	res := make([]uint64, 0, count)
+
+	var i uint64
+
+	for i = 0; i < count; i += 1 {
+		res = append(res, i)
+	}
+
+	return res
+
+}
+
+func (g *Gossiper) chunkCount(file *primitives.File) uint64 {
+
+	chunk := file.First.Next
+	res := uint64(0)
+
+	for chunk != nil {
+		res += 1
+		chunk = chunk.Next
+	}
+
+	return res
+
+}
+
+func (g *Gossiper) sendSearchReply(files []*primitives.File, origin string) {
+
+	results := make([]*primitives.SearchResult, len(files))
+
+	for _, f := range files {
+		count := g.chunkCount(f)
+		results = append(results, &primitives.SearchResult{
+			f.Name,
+			[]byte(f.First.Hash),
+			g.chunkMapFromCount(count),
+			count,
+		})
+	}
+
+	searchReply := &primitives.SearchReply{
+		g.name, origin, HOP_LIMIT, results,
+	}
+
+	fmt.Println("Sending search reply to "+origin)
+
+	g.sendPrivateMessage(&primitives.GossipPacket{
+		SearchReply:searchReply,
+
+	})
+
+}
+
+func (g *Gossiper) sendSearchRequest(searchRequest *primitives.SearchRequest,
+	except *net.UDPAddr) {
+
+	// TODO ignore sender
+
+	peers := len(g.peers)
+
+	min := int(searchRequest.Budget) / peers
+	specialPeers := int(searchRequest.Budget) % peers
+
+	cachedPeers := make([]*net.UDPAddr, peers)
+
+	loop := searchRequest.Budget > 0 && peers > 0
+
+	for loop {
+
+		var peer *net.UDPAddr
+
+		for {
+			peer = g.getRandomPeerExcept(except)
+
+			for _, p := range cachedPeers {
+				if p == peer {
+					continue
+				}
+			}
+
+			break
+		}
+
+		if peer == nil {
+			return
+		}
+
+		cachedPeers = append(cachedPeers, peer)
+
+		packet := &primitives.GossipPacket{SearchRequest:searchRequest}
+
+		if specialPeers > 0 {
+			specialPeers -= 1
+			searchRequest.Budget = uint64(min + 1)
+
+		} else if min > 0 {
+			searchRequest.Budget = uint64(min)
+			loop = len(cachedPeers) < peers
+		} else if min == 0 {
+			loop = specialPeers > 0
+		}
+
+		packetBytes, err := protobuf.Encode(packet)
+		utils.CheckError(err)
+
+		fmt.Println("SENDING SEARCH REQUEST TO "+peer.String())
+
+		g.conn.WriteToUDP(packetBytes, peer)
 
 	}
 
@@ -1236,6 +1534,8 @@ func (g *Gossiper) reconstructFile(file *primitives.File) {
 	// at the end
 	file.Complete = true
 
+	g.files = append(g.files, file)
+
 }
 
 func (g *Gossiper) constructFileChunks(reply *primitives.DataReply,
@@ -1356,6 +1656,8 @@ func (g *Gossiper) getDestinationOrigin(packet *primitives.GossipPacket) (dest, 
 		dest, orig = packet.DataRequest.Destination, packet.DataRequest.Origin
 	} else if packet.DataReply != nil {
 		dest, orig = packet.DataReply.Destination, packet.DataReply.Origin
+	} else if packet.SearchReply != nil {
+		dest, orig = packet.SearchReply.Destination, packet.SearchReply.Origin
 	}
 
 	return
@@ -1460,34 +1762,19 @@ func (g *Gossiper) sendPrivateMessage(packet *primitives.GossipPacket) {
 	} else if packet.DataReply != nil {
 		packet.DataReply.HopLimit -= 1
 		to = packet.DataReply.Destination
+	} else if packet.SearchReply != nil {
+		packet.SearchReply.HopLimit -= 1
+		to = packet.SearchReply.Destination
 	}
 
 	if to == "" {
 		return
 	}
 
-	fmt.Println("test1")
-	fmt.Println(packet)
-
-	if packet.DataReply != nil && hex.EncodeToString(packet.DataReply.HashValue[:]) == "24bc3500ed6fae8410d9c9c641aba73223c70ff4d8ff0f9550c63b95fb57231a" {
-		fmt.Println("DD")
-		fmt.Println(hex.EncodeToString(packet.DataReply.Data))
-		rep := packet.DataReply
-		fmt.Println(len(rep.Data))
-		if !g.checkHash(&rep.Data, &rep.HashValue) {
-			log.Fatal("ppp")
-		}
-		fmt.Println("D")
-		fmt.Println(len(rep.Data))
-		for _, b := range rep.Data {
-			fmt.Print(string(b)+" ")
-		}
-	}
+	fmt.Println("Sending private message to "+to+" at address "+g.routingTable[to].String())
 
 	packetByte, err := protobuf.Encode(packet)
 	utils.CheckError(err)
-
-	fmt.Println("test")
 
 	_, err = g.conn.WriteToUDP(packetByte, g.routingTable[to])
 	utils.CheckError(err)
@@ -1503,7 +1790,6 @@ func (g *Gossiper) waitStatusAck(from *net.UDPAddr, rumor *primitives.RumorMessa
 	defer ticker.Stop()
 
 	var rd = rand.Int() % 2
-	//fmt.Println("rd : "+strconv.Itoa(rd))
 
 	var channel = g.getChannel(from.String())
 
@@ -1788,7 +2074,7 @@ func (g *Gossiper) addFile(file *primitives.File) {
 
 	curr := file.First
 
-	fmt.Println("FILE ADDED : ")
+	fmt.Println("FILE ADDED : "+file.Name)
 
 	for curr != nil {
 		g.fileElements[curr.Hash] = curr
@@ -1797,6 +2083,8 @@ func (g *Gossiper) addFile(file *primitives.File) {
 
 		curr = curr.Next
 	}
+
+	g.files = append(g.files, file) // TODO concurrency
 
 }
 

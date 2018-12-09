@@ -102,4 +102,6 @@ Using the GUI, fill the form on the top of the page with the hash of the metafil
 
 For now, there is a bug for which it won't work for too big files but it works well for smaller files.
 
+## Third Homework
 
+Due to lack of time, I was only able to implement the first part of the homework. This means you can search for files using the *-keywords* option, which will return the metahash and the nodes that have the chunks. You can then download the file using *-request* and *-file* without *-dest*

@@ -8,4 +8,6 @@ type ClientMessage struct {
 	NewFile string
 	To string
 	FileName string
+	Keywords []string
+	Budget uint64
 }

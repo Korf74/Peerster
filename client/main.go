@@ -8,6 +8,8 @@ import (
 	"github.com/Korf74/Peerster/utils"
 	"github.com/dedis/protobuf"
 	"net"
+	"strconv"
+	"strings"
 )
 
 func main() {
@@ -27,6 +29,12 @@ func main() {
 	var request = flag.String("request", "",
 		"request a chunk or metafile of this hash")
 
+	var keywords = flag.String("keywords", "",
+		"keywords for file search")
+
+	var budget = flag.String("budget", "",
+		"budget of file search")
+
 	flag.Parse()
 
 	var udpAddrRemote, err1 = net.ResolveUDPAddr("udp4", "127.0.0.1:"+*UIPort)
@@ -42,6 +50,25 @@ func main() {
 
 	if *file != "" && *request == "" {
 		pckt.NewFile = *file
+	} else if *dest == "" && *file != "" && *request != "" {
+
+		if *request != "" && *file != "" {
+			if len(*request) != 64 {
+				fmt.Println("Incorrect hash")
+				return
+			}
+
+			hash, err := hex.DecodeString(*request)
+			utils.CheckError(err)
+
+			pckt.DataRequest = &primitives.DataRequest{
+				HashValue: hash,
+			}
+
+			fmt.Println("sending data req")
+
+		}
+
 	} else if *dest != "" {
 
 		if *request != "" && *file != "" {
@@ -64,6 +91,24 @@ func main() {
 			pckt.Private = true
 		}
 		pckt.To = *dest
+	} else if *keywords != "" {
+
+		var budgetInt int
+
+		if *budget == "" {
+			budgetInt = 2
+		} else {
+			var err error
+			budgetInt, err = strconv.Atoi(*budget)
+			utils.CheckError(err)
+		}
+
+		keywordArray := strings.Split(*keywords, ",")
+
+		pckt.Keywords = keywordArray
+		pckt.Budget = uint64(budgetInt)
+
+
 	} else {
 		pckt.Rumor = true
 	}
