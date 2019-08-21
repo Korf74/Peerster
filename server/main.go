@@ -2,41 +2,33 @@ package main
 
 import (
 	"bytes"
-	"encoding/hex"
 	"encoding/json"
-	"fmt"
-	"github.com/Korf74/Peerster/gossip"
-	"github.com/Korf74/Peerster/primitives"
 	"github.com/Korf74/Peerster/utils"
 	"github.com/dedis/protobuf"
 	"github.com/gorilla/mux"
-	"io"
 	"io/ioutil"
 	"log"
 	"net"
 	"net/http"
 	"os"
-	"strconv"
 )
-var gossipers []*gossipInfo
+var server *ServerInfo
 
-type gossipInfo struct {
-	G *gossip.Gossiper
-	Channel chan *primitives.ServerPacket
+type Peer string
+
+type ServerInfo struct {
 	Addr *net.UDPAddr
 	MsgBuffer []peerMessage
-	PrivateMsgBuffer []peerMessage
 	Peers []string
-	NewPeers []string
-	Contacts []string
-	NewContacts []string
 }
 
 type updateMessage struct {
 	Messages []peerMessage
-	PrivateMessages []peerMessage
+}
+
+type setupMessage struct {
+	Addr string
 	Peers []string
-	Contacts []string
 }
 
 type downloadMessage struct {
@@ -54,7 +46,10 @@ type peerMessage struct {
 type clientMessage struct {
 	Text string `json:"message"`
 	To string `json:"to"`
-	GossipID int `json:"id"`
+}
+
+type ChatMessage struct {
+	Text string
 }
 
 type addPeerMessage struct {
@@ -75,23 +70,14 @@ type gossiperAddrMessage struct {
 	GossipAddr string `json:"gossiperAddress"`
 }
 
-func update(w http.ResponseWriter, r *http.Request) {
+func getMessages(w http.ResponseWriter, r *http.Request) {
 
 	var body, err = ioutil.ReadAll(r.Body)
 	utils.CheckError(err)
 
 	body = bytes.TrimPrefix(body, []byte("\xef\xbb\xbf"))
 
-	var msg = idMessage{}
-	err = json.Unmarshal(body, &msg)
-	utils.CheckError(err)
-
-	gossiper := gossipers[msg.GossipID]
-
-	data, err := json.Marshal(updateMessage{
-		gossiper.MsgBuffer,
-	gossiper.PrivateMsgBuffer, gossiper.NewPeers,
-	gossiper.NewContacts})
+	data, err := json.Marshal(updateMessage{server.MsgBuffer})
 
 	utils.CheckError(err)
 
@@ -100,7 +86,25 @@ func update(w http.ResponseWriter, r *http.Request) {
 	_, err = w.Write(data)
 	utils.CheckError(err)
 
-	gossiper.Channel <- &primitives.ServerPacket{Flush:true}
+	server.MsgBuffer = make([]peerMessage, 0, 100)
+
+}
+
+func getPeers(w http.ResponseWriter, r *http.Request) {
+
+	var body, err = ioutil.ReadAll(r.Body)
+	utils.CheckError(err)
+
+	body = bytes.TrimPrefix(body, []byte("\xef\xbb\xbf"))
+
+	data, err := json.Marshal(setupMessage{server.Addr.IP.String(), server.Peers})
+
+	utils.CheckError(err)
+
+	w.Header().Set("Content-Type", "application/json")
+
+	_, err = w.Write(data)
+	utils.CheckError(err)
 
 }
 
@@ -115,22 +119,17 @@ func newMsg(w http.ResponseWriter, r *http.Request) {
 	err = json.Unmarshal(body, &msg)
 	utils.CheckError(err)
 
-	var pckt = primitives.ClientMessage{}
+	var pckt = ChatMessage{}
 
 	pckt.Text = msg.Text
-
-	if msg.To != "rumor" {
-		pckt.To = msg.To
-		pckt.Private = true
-	}
-
 
 	var packetBytes, err4 = protobuf.Encode(&pckt)
 	utils.CheckError(err4)
 
-	gossiper := gossipers[msg.GossipID]
+	peerAddr, err := net.ResolveUDPAddr("udp4", msg.To+":5001")
+	utils.CheckError(err)
 
-	var udpConn, err5 = net.DialUDP("udp4", nil, gossiper.Addr)
+	var udpConn, err5 = net.DialUDP("udp4", nil, peerAddr)
 	utils.CheckError(err5)
 
 	var _, err6 = udpConn.Write(packetBytes)
@@ -140,167 +139,39 @@ func newMsg(w http.ResponseWriter, r *http.Request) {
 
 }
 
-func newPeer(w http.ResponseWriter, r *http.Request) {
+func waitForMessages() {
 
-	var body, err = ioutil.ReadAll(r.Body)
+	var connection, err = net.ListenUDP("udp4", &net.UDPAddr{server.Addr.IP, 5001, server.Addr.Zone})
 	utils.CheckError(err)
 
-	body = bytes.TrimPrefix(body, []byte("\xef\xbb\xbf"))
+	defer connection.Close()
 
-	var msg = addPeerMessage{}
-	err = json.Unmarshal(body, &msg)
-	utils.CheckError(err)
-
-	peerAddr, err := net.ResolveUDPAddr("udp4", msg.Peer)
-	utils.CheckError(err)
-
-	gossipers[msg.GossipID].G.NotifyNewPeer(peerAddr)
-
-}
-
-func download(w http.ResponseWriter, r *http.Request) {
-
-	var body, err = ioutil.ReadAll(r.Body)
-	utils.CheckError(err)
-
-	body = bytes.TrimPrefix(body, []byte("\xef\xbb\xbf"))
-
-	var msg = downloadMessage{}
-	err = json.Unmarshal(body, &msg)
-	utils.CheckError(err)
-
-	req := &primitives.DataRequest{}
-	hash, err := hex.DecodeString(msg.MetaHash)
-	if err != nil {
-		return
-	}
-
-	req.HashValue = hash
-	req.Destination = msg.Contact
-
-	packetBytes, err := protobuf.Encode(&primitives.ClientMessage{
-		DataRequest: req, To: msg.Contact, FileName: msg.FileName,
-	})
-	utils.CheckError(err)
-
-	gossiper := gossipers[msg.GossipID]
-
-	udpConn, err := net.DialUDP("udp4", nil, gossiper.Addr)
-	utils.CheckError(err)
-
-	_, err = udpConn.Write(packetBytes)
-	utils.CheckError(err)
-
-	udpConn.Close()
-
-
-}
-
-func newFile(w http.ResponseWriter, r *http.Request) {
-
-	/*var body, err = ioutil.ReadAll(r.Body)
-	utils.CheckError(err)
-
-	body = bytes.TrimPrefix(body, []byte("\xef\xbb\xbf"))
-
-	var msg = idMessage{}
-	err = json.Unmarshal(body, &msg)
-	utils.CheckError(err)
-
-	fmt.Println(msg.GossipID)*/
-
-	fmt.Println(r.FormValue("id"))
-
-	file, handler, err := r.FormFile("file")
-	utils.CheckError(err)
-
-	// copy example
-	f, err := os.OpenFile("../_SharedFiles/"+handler.Filename, os.O_WRONLY|os.O_CREATE, 0666)
-	utils.CheckError(err)
-	io.Copy(f, file)
-
-	file.Close()
-	f.Close()
-
-	id, err := strconv.Atoi(r.FormValue("id"))
-	utils.CheckError(err)
-
-	gossipers[id].G.NotifyFile(handler.Filename)
-
-}
-
-func hasPeer(peer string, gossiper *gossipInfo) bool {
-
-	for _, p := range gossiper.Peers {
-		if peer == p {
-			return true
-		}
-	}
-
-	return false
-
-}
-
-func hasContact(contact string, gossiper *gossipInfo) bool {
-
-	for _, c := range gossiper.Contacts {
-		if contact == c {
-			return true
-		}
-	}
-
-	return false
-
-}
-
-func waitForMessages(gossiper *gossipInfo, channel chan *primitives.ServerPacket) {
-
-	gossiper.MsgBuffer = make([]peerMessage, 0, 100)
-	gossiper.PrivateMsgBuffer = make([]peerMessage, 0, 100)
-	gossiper.Peers = make([]string, 0, 100)
-	gossiper.NewPeers = make([]string, 0, 100)
-	gossiper.Contacts = make([]string, 0, 100)
-	gossiper.NewContacts = make([]string, 0, 100)
+	var buffer = make([]byte, 2048)
 
 	for {
-		pckt := <- channel
 
-		if pckt.Flush {
-			gossiper.MsgBuffer = make([]peerMessage, 0, 100)
-			gossiper.PrivateMsgBuffer = make([]peerMessage, 0, 100)
-			gossiper.NewPeers = make([]string, 0, 100)
-			gossiper.NewContacts = make([]string, 0, 100)
-		} else {
+		var sz, from, errRcv = connection.ReadFromUDP(buffer)
+		utils.CheckError(errRcv)
 
-			for _, peer := range *pckt.Peers {
-				if !hasPeer(peer, gossiper) {
-					gossiper.Peers = append(gossiper.Peers, peer)
-					gossiper.NewPeers = append(gossiper.NewPeers, peer)
-				}
+		if errRcv == nil {
+
+			var pckt = &ChatMessage{}
+
+			var errDecode = protobuf.Decode(buffer[:sz], pckt)
+			utils.CheckError(errDecode)
+
+			if pckt.Text != "" {
+				server.MsgBuffer = append(server.MsgBuffer,
+					peerMessage{from.IP.String(), pckt.Text})
 			}
 
-			for _, contact := range *pckt.Contacts {
-				if !hasContact(contact, gossiper) {
-					gossiper.Contacts = append(gossiper.Contacts, contact)
-					gossiper.NewContacts = append(gossiper.NewContacts, contact)
-				}
-			}
 
-			if pckt.Origin != "" && pckt.Content != "" {
-				if pckt.Private {
-					gossiper.PrivateMsgBuffer = append(gossiper.MsgBuffer,
-						peerMessage{pckt.Origin, pckt.Content})
-				} else {
-					gossiper.MsgBuffer = append(gossiper.MsgBuffer,
-						peerMessage{pckt.Origin, pckt.Content})
-				}
-			}
 		}
 
 	}
 
 }
-
+/*
 func createGossiper(w http.ResponseWriter, r *http.Request) {
 
 	var body, err = ioutil.ReadAll(r.Body)
@@ -332,8 +203,12 @@ func createGossiper(w http.ResponseWriter, r *http.Request) {
 
 	} else {
 
-		g, channel := gossip.NewGossiper(uiPort, udpAddrGossiper, "GossiperGUI"+strconv.Itoa(id),
+		name := "GossiperGUI"+strconv.Itoa(id)
+
+		g, channel := gossip.NewGossiper(uiPort, udpAddrGossiper, name,
 			"", 10, false) // TODO rtimer
+
+		gossiper.Contacts = append(gossiper.Contacts, name)
 
 		gossiper.Channel = channel
 		gossiper.G = g
@@ -355,20 +230,27 @@ func createGossiper(w http.ResponseWriter, r *http.Request) {
 
 	w.Write(data)
 
-}
+}*/
 
 func main() {
 
-	gossipers = make([]*gossipInfo, 0, 100)
+	//gossipers = make([]*gossipInfo, 0, 100)
+
+	server = &ServerInfo{}
+
+	server.Peers = os.Args[1:]
+	udpAddr, err := net.ResolveUDPAddr("udp4", "127.0.0.1:5000")
+	utils.CheckError(err)
+
+	go waitForMessages()
+
+	server.Addr = udpAddr
 
 	r := mux.NewRouter()
 
-	r.Methods("POST").Subrouter().HandleFunc("/", newMsg)//HandleFunc("/", newMsg)
-	r.Methods("POST").Subrouter().HandleFunc("/newPeer", newPeer)//HandleFunc("/", newMsg)
-	r.Methods("POST").Subrouter().HandleFunc("/getMessages", update)//HandleFunc("/", newMsg)
-	r.Methods("POST").Subrouter().HandleFunc("/createGossiper", createGossiper)//HandleFunc("/", newMsg)
-	r.Methods("POST").Subrouter().HandleFunc("/newFile", newFile)//HandleFunc("/", newMsg)
-	r.Methods("POST").Subrouter().HandleFunc("/download", download)//HandleFunc("/", newMsg)
+	r.Methods("POST").Subrouter().HandleFunc("/newMessage", newMsg)//HandleFunc("/", newMsg)
+	r.Methods("GET").Subrouter().HandleFunc("/getMessages", getMessages)//HandleFunc("/", newMsg)
+	r.Methods("GET").Subrouter().HandleFunc("/getPeers", getPeers)//HandleFunc("/", newMsg)
 	r.Handle("/", http.FileServer(http.Dir(".")))
 
 	log.Println(http.ListenAndServe(":8080", r))

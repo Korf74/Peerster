@@ -848,31 +848,15 @@ Website: http://emilcarlsson.se/
             </button>
         </div>
         <div class="contacts">
-            <form id="fileForm"enctype="multipart/form-data">
-                <input id="fileInput" name="file" type="file" />
-                <input id="shareFileButton2" type="button" value="Upload" />
-            </form>
-            <p>PEERS : </p>
-            <ul class="peer">
-                <li class="contact"><div class="wrap"><div class="meta"><p class="name">TestP</p></div></div></li>
-            </ul>
             <p>CONTACTS : </p>
             <form class="origin">
                 <!--<li class="contact"><div class="wrap"><div class="meta"><p class="name"><button class="contactButton" id="all">Rumors</button></p></div></div></li> -->
-                <input type="radio" name="messageType" value="rumor" checked>Rumor messages<br>
+                <!--<input type="radio" name="messageType" value="rumor" checked>Rumor messages<br> -->
             </form>
         </div>
     </div>
     <div class="content">
-        <div class="contact-profile">
-            <input id="downloadMeta" type="text" placeholder="File MetaHash..."/>
-            <input id="downloadContact" type="text" size="5%" placeholder="Contact..."/>
-            <input id="downloadFileName" type="text" size="5%" placeholder="File Name..."/>
-            <button id="download">Download</button>
-        </div>
         <div class="messages">
-            <ul>
-            </ul>
         </div>
         <div class="message-input">
             <div class="wrap">
@@ -887,8 +871,9 @@ Website: http://emilcarlsson.se/
 <script>$(".messages").animate({scrollTop: $(document).height()}, "fast");
 
 var gossipID = -1;
-var addr = "";
+var addr = "127.0.0.1:5000";
 var gossiperCreated = false;
+var peers = []
 
 function newMessage() {
     message = $(".message-input input").val();
@@ -898,16 +883,15 @@ function newMessage() {
 
     checkedValue = $('input[name=messageType]:checked').val();
 
-    $('<li id="'+checkedValue+'" class="sent"><p>' + message + '</p></li>').appendTo($('.messages ul'));
+    $('<li id="'+checkedValue+'" class="sent"><p>' + message + '</p></li>').appendTo($('#'+checkedValue));
     $('.message-input input').val(null);
     $('.contact.active .preview').html('<span>You: </span>' + message);
     $(".messages").animate({scrollTop: $(document).height()}, "fast");
 
-    $.post("/",
+    $.post("/newMessage",
             JSON.stringify({
                 message: message,
-                to: checkedValue,
-                id: gossipID
+                to: peers[checkedValue],
             }),
             function (data, status) {
                 alert("Data: " + data + "\nStatus: " + status);
@@ -917,26 +901,21 @@ function newMessage() {
 
 };
 
-// TODO refresh
 (function createGossiper() {
 
-    var gossipAddr = prompt("Please enter a gossiper address (default localhost)", "127.0.0.1");
+    var gossipAddr = "127.0.0.1";
 
-    $.post("/createGossiper",
-            JSON.stringify({
-                gossiperAddress: gossipAddr
-            }),
-            function(data) {
-                if(data.ID == -1) {
-                    alert("Error with the address entered, please try again with a correct one");
-                    createGossiper();
-                    return;
-                }
-                gossipID = data.ID;
-                $('.peerName').text(data.Addr);
+    $.get("/getPeers",
+            function(data, status) {
+                gossipAddr = data.Addr;
+                $('.peerName').text(gossipAddr);
                 gossiperCreated = true;
 
                 $("input[name='messageType']").change(changeMessageView);
+
+                for (let i = 0; i < data.Peers.length; ++i) {
+                    addContact(data.Peers[i]);
+                }
 
                 update();
             }
@@ -948,9 +927,17 @@ function changeMessageView() {
 
     value = $(this).val();
 
-    $('.messages li').hide();
-    $('.messages #'+value+'').show();
+    $('.messages ul').hide();
+    $('.messages #'+value).show();
 
+}
+
+function idFromAddr(addr) {
+    for (let i = 0; i < peers.length; ++i) {
+        if(peers[i] == addr) return i;
+    }
+
+    return -1;
 }
 
 function update() {
@@ -960,112 +947,22 @@ function update() {
         return;
     }
 
-    $.post("/getMessages",
-            JSON.stringify({
-                id: gossipID
-            }),
+    $.get("/getMessages",
             function(data) {
                 if(data.Messages != null) {
-                    //alert("Messages : "+data.Messages);
                     for (let i = 0; i < data.Messages.length; ++i) {
-                        $('<li id="rumor" class=replies><p align="right"><em>' + data.Messages[i].Origin + ' :</em><br>' + data.Messages[i].Content + '</p></li>')
-                                .appendTo($('.messages ul'));
-                    }
-                }
-
-                if(data.PrivateMessages != null) {
-                    //alert("Messages : "+data.Messages);
-                    for (let i = 0; i < data.PrivateMessages.length; ++i) {
-                        $('<li id="'+data.PrivateMessages[i].Origin+'" class=replies><p align="right"><em>' + data.PrivateMessages[i].Origin + ' :</em><br>' + data.PrivateMessages[i].Content + '</p></li>')
-                                .appendTo($('.messages ul'));
-                    }
-                }
-
-                if(data.Peers != null) {
-                    //alert("Peers : "+data.Peers);
-                    for (let i = 0; i < data.Peers.length; ++i) {
-                        addPeer(data.Peers[i]);
-                    }
-                }
-
-                if(data.Contacts != null) {
-                    //alert("Contacts : "+data.Contacts);
-                    for (let i = 0; i < data.Contacts.length; ++i) {
-                        addContact(data.Contacts[i]);
+                        $('<li id="'+idFromAddr(data.Messages[i].Origin)+'" class=replies><p align="right"><em>' + data.Messages[i].Origin + ' :</em><br>' + data.Messages[i].Content + '</p></li>')
+                                .appendTo($('#'+idFromAddr(data.Messages[i].Origin)));
                     }
                 }
             },
             "json");
 
-    setTimeout(update, 5000);
+    setTimeout(update, 500);
 };
 
 $('.submit').click(function () {
     newMessage();
-});
-
-$('#download').click(function() {
-
-    hash = $('#downloadMeta').val();
-    contact = $('#downloadContact').val();
-    fileName = $('#downloadFileName').val();
-
-    $.post("/download",
-            JSON.stringify({
-                metaHash: hash,
-                contact: contact,
-                fileName: fileName,
-                id: gossipID
-            }),
-            function (data, status) {
-
-            },
-            "json"
-    );
-
-});
-
-$('#shareFileButton').click(function() {
-    picker = $('#filePicker');
-    file = picker.val();
-    picker.val("");
-
-    alert(file);
-
-    $.post("/newFile",
-            JSON.stringify({
-                filePath: file,
-                id: gossipID
-            }),
-            function (data, status) {
-            },
-            "json"
-    );
-
-});
-
-$('#shareFileButton2').on('click', function() {
-
-    var fd = new FormData($('#fileForm')[0]);
-    fd.append("id", gossipID);
-
-    $.ajax({
-        // Your server script to process the upload
-        url: '/newFile',
-        type: 'POST',
-
-        // Form data
-        data: fd,
-
-        // Tell jQuery not to process data or worry about content-type
-        // You *must* include these options!
-        cache: false,
-        contentType: false,
-        processData: false,
-    });
-
-    $('#fileInput').val("")
-
 });
 
 $(window).on('keydown', function (e) {
@@ -1079,40 +976,15 @@ function test() {
     alert("TEST");
 };
 
-$('#addcontact').click(function () {
-    peerAddr = $(".peerAddr").val();
-    peerPort = $(".peerPort").val();
-
-    if ($.trim(peerAddr) == '') {
-        alert("Please specify a peer address");
-        return;
-    } else if ($.trim(peerPort) == '') {
-        alert("Please specify a peer port");
-        return;
-    }
-
-    $.post("/newPeer",
-            JSON.stringify({
-                peer: peerAddr+':'+peerPort,
-                id: gossipID
-            }),
-            function (data, status) {
-            },
-            "json"
-    );
-
-    //addPeer(peerAddr+':'+peerPort);
-
-});
-
 function addPeer(peer) {
     $('<li class="contact"><div class="wrap"><div class="meta"><p class="name">' + peer + '</p></div></div></li>').appendTo($('.contacts .peer'));
 };
 
 function addContact(contact) {
-    //$('<li class="contact"><div class="wrap"><div class="meta"><p class="name"><button class="contactButton" id="'+ contact +'">' + contact + '</button></p></div></div></li>').appendTo($('.contacts .origin'));
-    $('<input type="radio" name="messageType" value="'+contact+'">'+contact+'<br>').appendTo($('.contacts .origin'));
-    $('input[value='+contact+']').change(changeMessageView);
+    $('<ul id='+peers.length+'></ul>').appendTo('.messages');
+    $('<input type="radio" name="messageType" checked=True value="'+peers.length+'">'+contact+'<br>').appendTo($('.contacts .origin'));
+    peers.push(contact);
+    $('input[name=messageType]').change(changeMessageView);
 };
 
 //# sourceURL=pen.js
